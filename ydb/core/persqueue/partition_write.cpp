@@ -517,7 +517,9 @@ void TPartition::SyncMemoryStateWithKVState(const TActorContext& ctx) {
 void TPartition::Handle(TEvPQ::TEvHandleWriteResponse::TPtr&, const TActorContext& ctx) {
     DBGTRACE("TPartition::Handle(TEvPQ::TEvHandleWriteResponse)");
     PQ_LOG_T("TPartition::HandleOnWrite TEvHandleWriteResponse.");
+    OnProcessTxsAndUserActsWriteComplete(SET_OFFSET_COOKIE, ctx);
     HandleWriteResponse(ctx);
+    ProcessTxsAndUserActs(ctx);
 }
 
 void TPartition::HandleWriteResponse(const TActorContext& ctx) {
@@ -603,7 +605,6 @@ void TPartition::HandleWriteResponse(const TActorContext& ctx) {
     //HandleWrites(ctx);
     Become(&TThis::StateIdle);
     WriteInProgress = false;
-    ProcessTxsAndUserActs(ctx);
 }
 
 void TPartition::HandleOnWrite(const TEvPQ::TEvWrite& ev, const TActorContext& ctx) {
@@ -1684,6 +1685,65 @@ void TPartition::FilterDeadlinedWrites(const TActorContext& ctx) {
     UpdateWriteBufferIsFullState(ctx.Now());
 }
 
+void TPartition::HandleWrites(TEvKeyValue::TEvRequest& request, const TActorContext& ctx) {
+    DBGTRACE("TPartition::HandleWrites");
+    if (!CanWrite()) {
+        if (CanEnqueue()) {
+            return;
+        } else {
+            for(const auto& r : ReserveRequests) {
+                ReplyError(ctx, r->Cookie, InactivePartitionErrorCode,
+                    TStringBuilder() << "Write to inactive partition");
+            }
+            ReserveRequests.clear();
+            for(const auto& r : Requests) {
+                ReplyError(ctx, r.GetCookie(), InactivePartitionErrorCode,
+                    TStringBuilder() << "Write to inactive partition");
+            }
+            Requests.clear();
+            return;
+        }
+    }
+    if (PendingWriteRequest) {
+        return;
+    }
+
+    PQ_LOG_T("TPartition::HandleWrites. Requests.size()=" << Requests.size());
+    Become(&TThis::StateWrite);
+
+    Y_ABORT_UNLESS(Head.PackedSize + NewHead.PackedSize <= 2 * MaxSizeCheck);
+
+    TInstant now = ctx.Now();
+    WriteCycleStartTime = now;
+
+    bool haveData = false;
+    bool haveCheckDisk = false;
+
+    if (!Requests.empty() && DiskIsFull) {
+        CancelAllWritesOnIdle(ctx);
+        AddCheckDiskRequest(&request, NumChannels);
+        haveCheckDisk = true;
+    } else {
+        haveData = ProcessWrites(&request, now, ctx);
+    }
+    bool haveDrop = CleanUp(&request, ctx);
+
+    ProcessReserveRequests(ctx);
+    if (!haveData && !haveDrop && !haveCheckDisk) { //no data writed/deleted
+        if (!Requests.empty()) { //there could be change ownership requests that
+            bool res = ProcessWrites(&request, now, ctx);
+            Y_ABORT_UNLESS(!res);
+        }
+        Y_ABORT_UNLESS(Requests.empty()
+                    || WaitingForPreviousBlobQuota()
+                    || WaitingForSubDomainQuota(ctx)); //in this case all writes must be processed or no quota left
+        AnswerCurrentWrites(ctx); //in case if all writes are already done - no answer will be called on kv write, no kv write at all
+        BecomeIdle(ctx);
+        return;
+    }
+
+    WritesTotal.Inc();
+}
 
 void TPartition::HandleWrites(const TActorContext& ctx) {
     DBGTRACE("TPartition::HandleWrites");

@@ -1443,16 +1443,14 @@ void TPartition::Handle(TEvKeyValue::TEvResponse::TPtr& ev, const TActorContext&
     if (response.GetStatusResultSize())
         DiskIsFull = !diskIsOk;
 
-    if (response.HasCookie()) {
-        OnProcessTxsAndUserActsWriteComplete(response.GetCookie(), ctx);
+    const auto writeDuration = ctx.Now() - WriteStartTime;
+    const auto minWriteLatency = TDuration::MilliSeconds(AppData(ctx)->PQConfig.GetMinWriteLatencyMs());
+    if (writeDuration > minWriteLatency) {
+        OnProcessTxsAndUserActsWriteComplete(SET_OFFSET_COOKIE, ctx);
+        HandleWriteResponse(ctx);
+        ProcessTxsAndUserActs(ctx);
     } else {
-        const auto writeDuration = ctx.Now() - WriteStartTime;
-        const auto minWriteLatency = TDuration::MilliSeconds(AppData(ctx)->PQConfig.GetMinWriteLatencyMs());
-        if (writeDuration > minWriteLatency) {
-            HandleWriteResponse(ctx);
-        } else {
-            ctx.Schedule(minWriteLatency - writeDuration, new TEvPQ::TEvHandleWriteResponse());
-        }
+        ctx.Schedule(minWriteLatency - writeDuration, new TEvPQ::TEvHandleWriteResponse());
     }
 }
 
@@ -1572,13 +1570,7 @@ void TPartition::ContinueProcessTxsAndUserActs(const TActorContext& ctx)
         }
     }
 
-    if (WriteInProgress) {
-        HandleWrites(ctx);
-        return;
-    }
-
     THolder<TEvKeyValue::TEvRequest> request(new TEvKeyValue::TEvRequest);
-    request->Record.SetCookie(SET_OFFSET_COOKIE);
 
     if (TxIdHasChanged) {
         AddCmdWriteTxMeta(request->Record,
@@ -1586,8 +1578,18 @@ void TPartition::ContinueProcessTxsAndUserActs(const TActorContext& ctx)
     }
     AddCmdWriteUserInfos(request->Record);
     AddCmdWriteConfig(request->Record);
+    if (WriteInProgress) {
+        HandleWrites(*request, ctx);
+    }
 
-    ctx.Send(Tablet, request.Release());
+    if (WriteInProgress) {
+        Y_ABORT_UNLESS(!PendingWriteRequest);
+        PendingWriteRequest = std::move(request);
+        RequestBlobQuota();
+    } else {
+        ctx.Send(Tablet, request.Release());
+    }
+
     UsersInfoWriteInProgress = true;
 }
 
@@ -1926,11 +1928,11 @@ void TPartition::OnProcessTxsAndUserActsWriteComplete(ui64 cookie, const TActorC
         PendingPartitionConfig = nullptr;
     }
 
-    ProcessTxsAndUserActs(ctx);
-
-    if (ChangeConfig && CurrentStateFunc() == &TThis::StateIdle) {
-        HandleWrites(ctx);
-    }
+//    ProcessTxsAndUserActs(ctx);
+//
+//    if (ChangeConfig && CurrentStateFunc() == &TThis::StateIdle) {
+//        HandleWrites(ctx);
+//    }
 }
 
 void TPartition::EndChangePartitionConfig(NKikimrPQ::TPQTabletConfig&& config,

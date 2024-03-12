@@ -204,6 +204,7 @@ private:
     void AddMetaKey(TEvKeyValue::TEvRequest* request);
     void BecomeIdle(const TActorContext& ctx);
     void CheckHeadConsistency() const;
+    void HandleWrites(TEvKeyValue::TEvRequest& request, const TActorContext& ctx);
     void HandleWrites(const TActorContext& ctx);
     void RequestQuotaForWriteBlobRequest(size_t dataSize, ui64 cookie);
     void RequestBlobQuota();
