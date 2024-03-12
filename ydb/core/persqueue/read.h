@@ -6,6 +6,7 @@
 
 #include <ydb/core/keyvalue/keyvalue_flat_impl.h>
 #include <ydb/core/persqueue/events/internal.h>
+#include <ydb/library/dbgtrace/debug_trace.h>
 
 namespace NKikimr {
 namespace NPQ {
@@ -28,10 +29,13 @@ namespace NPQ {
         , Cache(tabletId)
         , CountersUpdateTime(TAppData::TimeProvider->Now())
         {
+            DBGTRACE("TPQCacheProxy::TPQCacheProxy");
+            DBGTRACE_LOG("tabletId=" << TabletId);
         }
 
         void Bootstrap(const TActorContext& ctx)
         {
+            DBGTRACE("TPQCacheProxy::Bootstrap");
             Y_UNUSED(ctx);
             Become(&TThis::StateFunc);
         }
@@ -146,6 +150,7 @@ namespace NPQ {
 
         void Handle(TEvKeyValue::TEvResponse::TPtr& ev, const TActorContext& ctx)
         {
+            DBGTRACE("TPQCacheProxy::Handle(TEvKeyValue::TEvResponse)");
             auto resp = ev->Get()->Record;
             Y_ABORT_UNLESS(resp.HasCookie());
             auto it = KvRequests.find(resp.GetCookie());
@@ -232,6 +237,7 @@ namespace NPQ {
 
         void OnKvWriteResult(TEvKeyValue::TEvResponse::TPtr& ev, const TActorContext& ctx, TKvRequest& kvReq)
         {
+            DBGTRACE("TPQCacheProxy::OnKvWriteResult");
             auto resp = ev->Get()->Record;
             if (resp.GetStatus() == NMsgBusProxy::MSTATUS_OK) {
                 Y_ABORT_UNLESS(resp.WriteResultSize() == (kvReq.Blobs.size() + kvReq.MetadataWritesCount),
@@ -259,6 +265,7 @@ namespace NPQ {
         // Passthrough request to KV
         void Handle(TEvKeyValue::TEvRequest::TPtr& ev, const TActorContext& ctx)
         {
+            DBGTRACE("TPQCacheProxy::Handle(TEvKeyValue::TEvRequest)");
             LOG_DEBUG_S(ctx, NKikimrServices::PERSQUEUE, "CacheProxy. Passthrough write request to KV");
 
             auto srcRequest = ev->Get()->Record;

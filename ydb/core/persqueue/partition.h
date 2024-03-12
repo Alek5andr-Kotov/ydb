@@ -159,14 +159,15 @@ private:
     void HandleOnIdle(TEvPQ::TEvRegisterMessageGroup::TPtr& ev, const TActorContext& ctx);
     void HandleOnIdle(TEvPQ::TEvSplitMessageGroup::TPtr& ev, const TActorContext& ctx);
     void HandleOnIdle(TEvPQ::TEvUpdateAvailableSize::TPtr& ev, const TActorContext& ctx);
-    void HandleOnIdle(TEvPQ::TEvWrite::TPtr& ev, const TActorContext& ctx);
+    //void HandleOnIdle(TEvPQ::TEvWrite::TPtr& ev, const TActorContext& ctx);
     void HandleOnInit(TEvPQ::TEvPartitionOffsets::TPtr& ev, const TActorContext& ctx);
     void HandleOnInit(TEvPQ::TEvPartitionStatus::TPtr& ev, const TActorContext& ctx);
     void HandleOnWrite(TEvPQ::TEvDeregisterMessageGroup::TPtr& ev, const TActorContext& ctx);
     void HandleOnWrite(TEvPQ::TEvRegisterMessageGroup::TPtr& ev, const TActorContext& ctx);
     void HandleOnWrite(TEvPQ::TEvSplitMessageGroup::TPtr& ev, const TActorContext& ctx);
     void HandleOnWrite(TEvPQ::TEvUpdateAvailableSize::TPtr& ev, const TActorContext& ctx);
-    void HandleOnWrite(TEvPQ::TEvWrite::TPtr& ev, const TActorContext& ctx);
+    //void HandleOnWrite(TEvPQ::TEvWrite::TPtr& ev, const TActorContext& ctx);
+    void Handle(TEvPQ::TEvWrite::TPtr& ev, const TActorContext& ctx);
     void HandleWakeup(const TActorContext& ctx);
     void HandleWriteResponse(const TActorContext& ctx);
 
@@ -454,7 +455,8 @@ private:
             CFunc(TEvents::TSystem::Wakeup, HandleWakeup);
             HFuncTraced(TEvKeyValue::TEvResponse, Handle);
             HFuncTraced(TEvPQ::TEvBlobResponse, Handle);
-            HFuncTraced(TEvPQ::TEvWrite, HandleOnIdle);
+            //HFuncTraced(TEvPQ::TEvWrite, HandleOnIdle);
+            HFuncTraced(TEvPQ::TEvWrite, Handle);
             HFuncTraced(TEvPQ::TEvRead, Handle);
             HFuncTraced(TEvPQ::TEvApproveReadQuota, Handle);
             HFuncTraced(TEvPQ::TEvReadTimeout, Handle);
@@ -511,7 +513,8 @@ private:
             HFuncTraced(TEvKeyValue::TEvResponse, Handle);
             HFuncTraced(TEvPQ::TEvHandleWriteResponse, Handle);
             HFuncTraced(TEvPQ::TEvBlobResponse, Handle);
-            HFuncTraced(TEvPQ::TEvWrite, HandleOnWrite);
+            //HFuncTraced(TEvPQ::TEvWrite, HandleOnWrite);
+            HFuncTraced(TEvPQ::TEvWrite, Handle);
             HFuncTraced(TEvPQ::TEvRead, Handle);
             HFuncTraced(TEvPQ::TEvApproveReadQuota, Handle);
             HFuncTraced(TEvPQ::TEvReadTimeout, Handle);
@@ -648,6 +651,7 @@ private:
     bool ProcessUserActionOrTransaction(TEvPQ::TEvSetClientInfo& event, const TActorContext& ctx);
     bool ProcessUserActionOrTransaction(const TEvPersQueue::TEvProposeTransaction& event, const TActorContext& ctx);
     bool ProcessUserActionOrTransaction(TTransaction& tx, const TActorContext& ctx);
+    bool ProcessUserActionOrTransaction(const TEvPQ::TEvWrite& event, const TActorContext& ctx);
 
     //
     // user actions and transactions
@@ -655,7 +659,8 @@ private:
     using TUserActionAndTransactionEvent =
         std::variant<TSimpleSharedPtr<TEvPQ::TEvSetClientInfo>,             // user actions
                      TSimpleSharedPtr<TEvPersQueue::TEvProposeTransaction>, // immediate transaction
-                     TSimpleSharedPtr<TTransaction>>;                       // distributed transaction or update config
+                     TSimpleSharedPtr<TTransaction>,                        // distributed transaction or update config
+                     TSimpleSharedPtr<TEvPQ::TEvWrite>>;
     std::deque<TUserActionAndTransactionEvent> UserActionAndTransactionEvents;
     size_t ImmediateTxCount = 0;
     THashMap<TString, size_t> UserActCount;
@@ -664,6 +669,7 @@ private:
     THashSet<TString> AffectedUsers;
     bool UsersInfoWriteInProgress = false;
     bool TxInProgress = false;
+    bool WriteInProgress = false;
     TMaybe<ui64> PlanStep;
     TMaybe<ui64> TxId;
     bool TxIdHasChanged = false;
@@ -781,6 +787,9 @@ private:
     bool ClosedInternalPartition = false;
 
     bool IsSupportive() const;
+
+    //void HandleOnIdle(const TEvPQ::TEvWrite& ev, const TActorContext& ctx);
+    void HandleOnWrite(const TEvPQ::TEvWrite& ev, const TActorContext& ctx);
 };
 
 } // namespace NKikimr::NPQ

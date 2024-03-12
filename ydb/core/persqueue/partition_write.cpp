@@ -22,6 +22,7 @@
 #include <util/folder/path.h>
 #include <util/string/escape.h>
 #include <util/system/byteorder.h>
+#include <ydb/library/dbgtrace/debug_trace.h>
 
 namespace NKikimr::NPQ {
 
@@ -145,6 +146,7 @@ void TPartition::FailBadClient(const TActorContext& ctx) {
 }
 
 void TPartition::ProcessChangeOwnerRequest(TAutoPtr<TEvPQ::TEvChangeOwner> ev, const TActorContext& ctx) {
+    DBGTRACE("TPartition::ProcessChangeOwnerRequest");
     PQ_LOG_T("TPartition::ProcessChangeOwnerRequest.");
 
     auto &owner = ev->Owner;
@@ -190,6 +192,8 @@ THashMap<TString, NKikimr::NPQ::TOwnerInfo>::iterator TPartition::DropOwner(THas
 }
 
 void TPartition::Handle(TEvPQ::TEvChangeOwner::TPtr& ev, const TActorContext& ctx) {
+    DBGTRACE("TPartition::Handle(TEvPQ::TEvChangeOwner)");
+    DBGTRACE_LOG("owner=" << ev->Get()->Owner);
     PQ_LOG_T("TPartition::HandleOnWrite TEvChangeOwner.");
 
     bool res = OwnerPipes.insert(ev->Get()->PipeClient).second;
@@ -199,6 +203,7 @@ void TPartition::Handle(TEvPQ::TEvChangeOwner::TPtr& ev, const TActorContext& ct
 }
 
 void TPartition::ProcessReserveRequests(const TActorContext& ctx) {
+    DBGTRACE("TPartition::ProcessReserveRequests");
     PQ_LOG_T("TPartition::ProcessReserveRequests.");
 
     const ui64 maxWriteInflightSize = Config.GetPartitionConfig().GetMaxWriteInflightSize();
@@ -252,6 +257,10 @@ void TPartition::UpdateWriteBufferIsFullState(const TInstant& now) {
 
 
 void TPartition::Handle(TEvPQ::TEvReserveBytes::TPtr& ev, const TActorContext& ctx) {
+    DBGTRACE("TPartition::Handle(TEvPQ::TEvReserveBytes)");
+    DBGTRACE_LOG("Cookie=" << ev->Get()->Cookie);
+    DBGTRACE_LOG("OwnerCookie=" << ev->Get()->OwnerCookie);
+    DBGTRACE_LOG("MessageNo=" << ev->Get()->MessageNo);
     PQ_LOG_T("TPartition::HandleOnWrite TEvReserveBytes.");
 
     const TString& ownerCookie = ev->Get()->OwnerCookie;
@@ -273,16 +282,37 @@ void TPartition::Handle(TEvPQ::TEvReserveBytes::TPtr& ev, const TActorContext& c
     }
 
     ++it->second.NextMessageNo;
+    DBGTRACE_LOG("NextMessageNo=" << it->second.NextMessageNo);
     ReserveRequests.push_back(ev->Release());
     ProcessReserveRequests(ctx);
 }
 
-void TPartition::HandleOnIdle(TEvPQ::TEvWrite::TPtr& ev, const TActorContext& ctx) {
-    HandleOnWrite(ev, ctx);
-    HandleWrites(ctx);
+//void TPartition::HandleOnIdle(const TEvPQ::TEvWrite& ev, const TActorContext& ctx) {
+//    DBGTRACE("TPartition::HandleOnIdle(TEvPQ::TEvWrite)");
+//    HandleOnWrite(ev, ctx);
+////    HandleWrites(ctx);
+//}
+
+void TPartition::Handle(TEvPQ::TEvWrite::TPtr& ev, const TActorContext& ctx) {
+    DBGTRACE("TPartition::Handle(TEvPQ::TEvWrite)");
+    TSimpleSharedPtr<TEvPQ::TEvWrite> event(ev->Release());
+    UserActionAndTransactionEvents.emplace_back(std::move(event));
+    DBGTRACE_LOG("UserActionAndTransactionEvents.size=" << UserActionAndTransactionEvents.size());
+    ProcessTxsAndUserActs(ctx);
 }
 
+//void TPartition::HandleOnIdle(TEvPQ::TEvWrite::TPtr& ev, const TActorContext& ctx) {
+//    DBGTRACE("TPartition::HandleOnIdle(TEvPQ::TEvWrite)");
+//    TSimpleSharedPtr<TEvPQ::TEvWrite> event(ev->Release());
+//    UserActionAndTransactionEvents.emplace_back(std::move(event));
+//    DBGTRACE_LOG("UserActionAndTransactionEvents.size=" << UserActionAndTransactionEvents.size());
+//    ProcessTxsAndUserActs(ctx);
+////    HandleOnWrite(ev, ctx);
+////    HandleWrites(ctx);
+//}
+
 void TPartition::AnswerCurrentWrites(const TActorContext& ctx) {
+    DBGTRACE("TPartition::AnswerCurrentWrites");
     PQ_LOG_T("TPartition::AnswerCurrentWrites. Responses.size()=" << Responses.size());
 
     ui64 offset = EndOffset;
@@ -485,11 +515,13 @@ void TPartition::SyncMemoryStateWithKVState(const TActorContext& ctx) {
 }
 
 void TPartition::Handle(TEvPQ::TEvHandleWriteResponse::TPtr&, const TActorContext& ctx) {
+    DBGTRACE("TPartition::Handle(TEvPQ::TEvHandleWriteResponse)");
     PQ_LOG_T("TPartition::HandleOnWrite TEvHandleWriteResponse.");
     HandleWriteResponse(ctx);
 }
 
 void TPartition::HandleWriteResponse(const TActorContext& ctx) {
+    DBGTRACE("TPartition::HandleWriteResponse");
     PQ_LOG_T("TPartition::HandleWriteResponse.");
     Y_ABORT_UNLESS(CurrentStateFunc() == &TThis::StateWrite);
     ui64 prevEndOffset = EndOffset;
@@ -568,26 +600,42 @@ void TPartition::HandleWriteResponse(const TActorContext& ctx) {
 
     ProcessTimestampsForNewData(prevEndOffset, ctx);
 
-    HandleWrites(ctx);
+    //HandleWrites(ctx);
+    Become(&TThis::StateIdle);
+    WriteInProgress = false;
+    ProcessTxsAndUserActs(ctx);
 }
 
-void TPartition::HandleOnWrite(TEvPQ::TEvWrite::TPtr& ev, const TActorContext& ctx) {
+void TPartition::HandleOnWrite(const TEvPQ::TEvWrite& ev, const TActorContext& ctx) {
+    DBGTRACE("TPartition::HandleOnWrite(TEvPQ::TEvWrite)");
+    DBGTRACE_LOG("Cookie=" << ev.Cookie);
+    DBGTRACE_LOG("MsgNo=" << ev.MessageNo);
+    DBGTRACE_LOG("OwnerCookie=" << ev.OwnerCookie);
+    DBGTRACE_LOG("Offset=" << ev.Offset);
+    for (size_t i = 0; i < ev.Msgs.size(); ++i) {
+        DBGTRACE_LOG("i=" << i);
+        const auto& msgs = ev.Msgs;
+        DBGTRACE_LOG("SourceId=" << msgs[i].SourceId);
+        DBGTRACE_LOG("SeqNo=" << msgs[i].SeqNo);
+        DBGTRACE_LOG("Data=" << msgs[i].Data);
+    }
+    DBGTRACE_LOG("InitialSeqNo=" << ev.InitialSeqNo);
     PQ_LOG_T("TPartition::HandleOnWrite TEvWrite.");
 
     if (!CanEnqueue()) {
-        ReplyError(ctx, ev->Get()->Cookie, InactivePartitionErrorCode,
+        ReplyError(ctx, ev.Cookie, InactivePartitionErrorCode,
             TStringBuilder() << "Write to inactive partition");
         return;
     }
 
-    ui32 sz = std::accumulate(ev->Get()->Msgs.begin(), ev->Get()->Msgs.end(), 0u, [](ui32 sum, const TEvPQ::TEvWrite::TMsg& msg) {
+    ui32 sz = std::accumulate(ev.Msgs.begin(), ev.Msgs.end(), 0u, [](ui32 sum, const TEvPQ::TEvWrite::TMsg& msg) {
         return sum + msg.Data.size();
     });
 
     bool mirroredPartition = Config.GetPartitionConfig().HasMirrorFrom();
 
-    if (mirroredPartition && !ev->Get()->OwnerCookie.empty()) {
-        ReplyError(ctx, ev->Get()->Cookie, NPersQueue::NErrorCode::BAD_REQUEST,
+    if (mirroredPartition && !ev.OwnerCookie.empty()) {
+        ReplyError(ctx, ev.Cookie, NPersQueue::NErrorCode::BAD_REQUEST,
             TStringBuilder() << "Write to mirrored topic is forbiden ");
         return;
     }
@@ -595,18 +643,18 @@ void TPartition::HandleOnWrite(TEvPQ::TEvWrite::TPtr& ev, const TActorContext& c
     ui64 decReservedSize = 0;
     TStringBuf owner;
 
-    if (!mirroredPartition && !ev->Get()->IsDirectWrite) {
-        owner = TOwnerInfo::GetOwnerFromOwnerCookie(ev->Get()->OwnerCookie);
+    if (!mirroredPartition && !ev.IsDirectWrite) {
+        owner = TOwnerInfo::GetOwnerFromOwnerCookie(ev.OwnerCookie);
         auto it = Owners.find(owner);
 
         if (it == Owners.end() || it->second.NeedResetOwner) {
-            ReplyError(ctx, ev->Get()->Cookie, NPersQueue::NErrorCode::WRONG_COOKIE,
+            ReplyError(ctx, ev.Cookie, NPersQueue::NErrorCode::WRONG_COOKIE,
                 TStringBuilder() << "new GetOwnership request needed for owner " << owner);
             return;
         }
 
         if (it->second.SourceIdDeleted) {
-            ReplyError(ctx, ev->Get()->Cookie, NPersQueue::NErrorCode::SOURCEID_DELETED,
+            ReplyError(ctx, ev.Cookie, NPersQueue::NErrorCode::SOURCEID_DELETED,
                 TStringBuilder() << "Yours maximum written sequence number for session was deleted, need to recreate session. "
                     << "Current count of sourceIds is " << SourceIdStorage.GetInMemorySourceIds().size() << " and limit is " << Config.GetPartitionConfig().GetSourceIdMaxCounts()
                     << ", current minimum sourceid timestamp(Ms) is " << SourceIdStorage.MinAvailableTimestamp(ctx.Now()).MilliSeconds()
@@ -614,47 +662,48 @@ void TPartition::HandleOnWrite(TEvPQ::TEvWrite::TPtr& ev, const TActorContext& c
             return;
         }
 
-        if (it->second.OwnerCookie != ev->Get()->OwnerCookie) {
-            ReplyError(ctx, ev->Get()->Cookie, NPersQueue::NErrorCode::WRONG_COOKIE,
-                        TStringBuilder() << "incorrect ownerCookie " << ev->Get()->OwnerCookie << ", must be " << it->second.OwnerCookie);
+        if (it->second.OwnerCookie != ev.OwnerCookie) {
+            ReplyError(ctx, ev.Cookie, NPersQueue::NErrorCode::WRONG_COOKIE,
+                        TStringBuilder() << "incorrect ownerCookie " << ev.OwnerCookie << ", must be " << it->second.OwnerCookie);
             return;
         }
 
-        if (ev->Get()->MessageNo != it->second.NextMessageNo) {
-            ReplyError(ctx, ev->Get()->Cookie, NPersQueue::NErrorCode::BAD_REQUEST,
-                TStringBuilder() << "reorder in requests, waiting " << it->second.NextMessageNo << ", but got " << ev->Get()->MessageNo);
+        if (ev.MessageNo != it->second.NextMessageNo) {
+            ReplyError(ctx, ev.Cookie, NPersQueue::NErrorCode::BAD_REQUEST,
+                TStringBuilder() << "reorder in requests, waiting " << it->second.NextMessageNo << ", but got " << ev.MessageNo);
             DropOwner(it, ctx);
             return;
         }
 
         ++it->second.NextMessageNo;
+        DBGTRACE_LOG("NextMessageNo=" << it->second.NextMessageNo);
         decReservedSize = it->second.DecReservedSize();
     }
 
     ReservedSize -= decReservedSize;
     TabletCounters.Simple()[COUNTER_PQ_TABLET_RESERVED_BYTES_SIZE].Set(ReservedSize);
 
-    TMaybe<ui64> offset = ev->Get()->Offset;
+    TMaybe<ui64> offset = ev.Offset;
 
     if (WriteInflightSize > Config.GetPartitionConfig().GetMaxWriteInflightSize()) {
-        TabletCounters.Cumulative()[COUNTER_PQ_WRITE_ERROR].Increment(ev->Get()->Msgs.size());
+        TabletCounters.Cumulative()[COUNTER_PQ_WRITE_ERROR].Increment(ev.Msgs.size());
         TabletCounters.Cumulative()[COUNTER_PQ_WRITE_BYTES_ERROR].Increment(sz);
 
-        ReplyError(ctx, ev->Get()->Cookie, NPersQueue::NErrorCode::OVERLOAD,
+        ReplyError(ctx, ev.Cookie, NPersQueue::NErrorCode::OVERLOAD,
             TStringBuilder() << "try later. Write inflight limit reached. "
                 << WriteInflightSize << " vs. maximum " <<  Config.GetPartitionConfig().GetMaxWriteInflightSize());
         return;
     }
-    for (const auto& msg: ev->Get()->Msgs) {
+    for (const auto& msg: ev.Msgs) {
         //this is checked in pq_impl when forming EvWrite request
-        Y_ABORT_UNLESS(!msg.SourceId.empty() || ev->Get()->IsDirectWrite || msg.DisableDeduplication);
+        Y_ABORT_UNLESS(!msg.SourceId.empty() || ev.IsDirectWrite || msg.DisableDeduplication);
         Y_ABORT_UNLESS(!msg.Data.empty());
 
         if (msg.SeqNo > (ui64)Max<i64>()) {
             LOG_ERROR_S(ctx, NKikimrServices::PERSQUEUE, "Request to write wrong SeqNo. Partition "
                 << Partition << " sourceId '" << EscapeC(msg.SourceId) << "' seqno " << msg.SeqNo);
 
-            ReplyError(ctx, ev->Get()->Cookie, NPersQueue::NErrorCode::BAD_REQUEST,
+            ReplyError(ctx, ev.Cookie, NPersQueue::NErrorCode::BAD_REQUEST,
                 TStringBuilder() << "wrong SeqNo " << msg.SeqNo);
             return;
         }
@@ -662,7 +711,7 @@ void TPartition::HandleOnWrite(TEvPQ::TEvWrite::TPtr& ev, const TActorContext& c
         ui32 sz = msg.Data.size() + msg.SourceId.size() + TClientBlob::OVERHEAD;
 
         if (sz > MAX_BLOB_PART_SIZE) {
-            ReplyError(ctx, ev->Get()->Cookie, NPersQueue::NErrorCode::BAD_REQUEST,
+            ReplyError(ctx, ev.Cookie, NPersQueue::NErrorCode::BAD_REQUEST,
                 TStringBuilder() << "too big message " << sz << " vs. maximum " << MAX_BLOB_PART_SIZE);
             return;
         }
@@ -673,10 +722,10 @@ void TPartition::HandleOnWrite(TEvPQ::TEvWrite::TPtr& ev, const TActorContext& c
     }
 
     ui64 size = 0;
-    for (auto& msg: ev->Get()->Msgs) {
+    for (auto& msg: ev.Msgs) {
         size += msg.Data.size();
         bool needToChangeOffset = msg.PartNo + 1 == msg.TotalParts;
-        EmplaceRequest(TWriteMsg{ev->Get()->Cookie, offset, std::move(msg), ev->Get()->InitialSeqNo}, ctx);
+        EmplaceRequest(TWriteMsg{ev.Cookie, offset, std::move(msg), ev.InitialSeqNo}, ctx);
         if (offset && needToChangeOffset)
             ++*offset;
     }
@@ -689,6 +738,141 @@ void TPartition::HandleOnWrite(TEvPQ::TEvWrite::TPtr& ev, const TActorContext& c
     Y_ABORT_UNLESS(size <= decReservedSize || decReservedSize == 0);
     UpdateWriteBufferIsFullState(ctx.Now());
 }
+
+//void TPartition::HandleOnWrite(TEvPQ::TEvWrite::TPtr& ev, const TActorContext& ctx) {
+//    DBGTRACE("TPartition::HandleOnWrite(TEvPQ::TEvWrite)");
+//    Y_UNUSED(ev);
+//    Y_UNUSED(ctx);
+//    Y_ABORT_UNLESS(false);
+////    DBGTRACE_LOG("Cookie=" << ev->Get()->Cookie);
+////    DBGTRACE_LOG("MsgNo=" << ev->Get()->MessageNo);
+////    DBGTRACE_LOG("OwnerCookie=" << ev->Get()->OwnerCookie);
+////    DBGTRACE_LOG("Offset=" << ev->Get()->Offset);
+////    for (size_t i = 0; i < ev->Get()->Msgs.size(); ++i) {
+////        DBGTRACE_LOG("i=" << i);
+////        const auto& msgs = ev->Get()->Msgs;
+////        DBGTRACE_LOG("SourceId=" << msgs[i].SourceId);
+////        DBGTRACE_LOG("SeqNo=" << msgs[i].SeqNo);
+////        DBGTRACE_LOG("Data=" << msgs[i].Data);
+////    }
+////    DBGTRACE_LOG("InitialSeqNo=" << ev->Get()->InitialSeqNo);
+////    PQ_LOG_T("TPartition::HandleOnWrite TEvWrite.");
+////
+////    if (!CanEnqueue()) {
+////        ReplyError(ctx, ev->Get()->Cookie, InactivePartitionErrorCode,
+////            TStringBuilder() << "Write to inactive partition");
+////        return;
+////    }
+////
+////    ui32 sz = std::accumulate(ev->Get()->Msgs.begin(), ev->Get()->Msgs.end(), 0u, [](ui32 sum, const TEvPQ::TEvWrite::TMsg& msg) {
+////        return sum + msg.Data.size();
+////    });
+////
+////    bool mirroredPartition = Config.GetPartitionConfig().HasMirrorFrom();
+////
+////    if (mirroredPartition && !ev->Get()->OwnerCookie.empty()) {
+////        ReplyError(ctx, ev->Get()->Cookie, NPersQueue::NErrorCode::BAD_REQUEST,
+////            TStringBuilder() << "Write to mirrored topic is forbiden ");
+////        return;
+////    }
+////
+////    ui64 decReservedSize = 0;
+////    TStringBuf owner;
+////
+////    if (!mirroredPartition && !ev->Get()->IsDirectWrite) {
+////        owner = TOwnerInfo::GetOwnerFromOwnerCookie(ev->Get()->OwnerCookie);
+////        auto it = Owners.find(owner);
+////
+////        if (it == Owners.end() || it->second.NeedResetOwner) {
+////            ReplyError(ctx, ev->Get()->Cookie, NPersQueue::NErrorCode::WRONG_COOKIE,
+////                TStringBuilder() << "new GetOwnership request needed for owner " << owner);
+////            return;
+////        }
+////
+////        if (it->second.SourceIdDeleted) {
+////            ReplyError(ctx, ev->Get()->Cookie, NPersQueue::NErrorCode::SOURCEID_DELETED,
+////                TStringBuilder() << "Yours maximum written sequence number for session was deleted, need to recreate session. "
+////                    << "Current count of sourceIds is " << SourceIdStorage.GetInMemorySourceIds().size() << " and limit is " << Config.GetPartitionConfig().GetSourceIdMaxCounts()
+////                    << ", current minimum sourceid timestamp(Ms) is " << SourceIdStorage.MinAvailableTimestamp(ctx.Now()).MilliSeconds()
+////                    << " and border timestamp(Ms) is " << ((ctx.Now() - TInstant::Seconds(Config.GetPartitionConfig().GetSourceIdLifetimeSeconds())).MilliSeconds()));
+////            return;
+////        }
+////
+////        if (it->second.OwnerCookie != ev->Get()->OwnerCookie) {
+////            ReplyError(ctx, ev->Get()->Cookie, NPersQueue::NErrorCode::WRONG_COOKIE,
+////                        TStringBuilder() << "incorrect ownerCookie " << ev->Get()->OwnerCookie << ", must be " << it->second.OwnerCookie);
+////            return;
+////        }
+////
+////        if (ev->Get()->MessageNo != it->second.NextMessageNo) {
+////            ReplyError(ctx, ev->Get()->Cookie, NPersQueue::NErrorCode::BAD_REQUEST,
+////                TStringBuilder() << "reorder in requests, waiting " << it->second.NextMessageNo << ", but got " << ev->Get()->MessageNo);
+////            DropOwner(it, ctx);
+////            return;
+////        }
+////
+////        ++it->second.NextMessageNo;
+////        decReservedSize = it->second.DecReservedSize();
+////    }
+////
+////    ReservedSize -= decReservedSize;
+////    TabletCounters.Simple()[COUNTER_PQ_TABLET_RESERVED_BYTES_SIZE].Set(ReservedSize);
+////
+////    TMaybe<ui64> offset = ev->Get()->Offset;
+////
+////    if (WriteInflightSize > Config.GetPartitionConfig().GetMaxWriteInflightSize()) {
+////        TabletCounters.Cumulative()[COUNTER_PQ_WRITE_ERROR].Increment(ev->Get()->Msgs.size());
+////        TabletCounters.Cumulative()[COUNTER_PQ_WRITE_BYTES_ERROR].Increment(sz);
+////
+////        ReplyError(ctx, ev->Get()->Cookie, NPersQueue::NErrorCode::OVERLOAD,
+////            TStringBuilder() << "try later. Write inflight limit reached. "
+////                << WriteInflightSize << " vs. maximum " <<  Config.GetPartitionConfig().GetMaxWriteInflightSize());
+////        return;
+////    }
+////    for (const auto& msg: ev->Get()->Msgs) {
+////        //this is checked in pq_impl when forming EvWrite request
+////        Y_ABORT_UNLESS(!msg.SourceId.empty() || ev->Get()->IsDirectWrite || msg.DisableDeduplication);
+////        Y_ABORT_UNLESS(!msg.Data.empty());
+////
+////        if (msg.SeqNo > (ui64)Max<i64>()) {
+////            LOG_ERROR_S(ctx, NKikimrServices::PERSQUEUE, "Request to write wrong SeqNo. Partition "
+////                << Partition << " sourceId '" << EscapeC(msg.SourceId) << "' seqno " << msg.SeqNo);
+////
+////            ReplyError(ctx, ev->Get()->Cookie, NPersQueue::NErrorCode::BAD_REQUEST,
+////                TStringBuilder() << "wrong SeqNo " << msg.SeqNo);
+////            return;
+////        }
+////
+////        ui32 sz = msg.Data.size() + msg.SourceId.size() + TClientBlob::OVERHEAD;
+////
+////        if (sz > MAX_BLOB_PART_SIZE) {
+////            ReplyError(ctx, ev->Get()->Cookie, NPersQueue::NErrorCode::BAD_REQUEST,
+////                TStringBuilder() << "too big message " << sz << " vs. maximum " << MAX_BLOB_PART_SIZE);
+////            return;
+////        }
+////
+////        if (!mirroredPartition) {
+////            SourceIdStorage.RegisterSourceIdOwner(msg.SourceId, owner);
+////        }
+////    }
+////
+////    ui64 size = 0;
+////    for (auto& msg: ev->Get()->Msgs) {
+////        size += msg.Data.size();
+////        bool needToChangeOffset = msg.PartNo + 1 == msg.TotalParts;
+////        EmplaceRequest(TWriteMsg{ev->Get()->Cookie, offset, std::move(msg), ev->Get()->InitialSeqNo}, ctx);
+////        if (offset && needToChangeOffset)
+////            ++*offset;
+////    }
+////    if (WaitingForPreviousBlobQuota() || WaitingForSubDomainQuota(ctx)) {
+////        SetDeadlinesForWrites(ctx);
+////    }
+////    WriteInflightSize += size;
+////
+////    // TODO: remove decReservedSize == 0
+////    Y_ABORT_UNLESS(size <= decReservedSize || decReservedSize == 0);
+////    UpdateWriteBufferIsFullState(ctx.Now());
+//}
 
 void TPartition::HandleOnIdle(TEvPQ::TEvRegisterMessageGroup::TPtr& ev, const TActorContext& ctx) {
     HandleOnWrite(ev, ctx);
@@ -810,6 +994,7 @@ std::pair<TKey, ui32> TPartition::Compact(const TKey& key, const ui32 size, bool
 
 
 void TPartition::ProcessChangeOwnerRequests(const TActorContext& ctx) {
+    DBGTRACE("TPartition::ProcessChangeOwnerRequests");
     PQ_LOG_T("TPartition::ProcessChangeOwnerRequests.");
 
     while (!WaitToChangeOwner.empty()) {
@@ -1312,6 +1497,7 @@ std::pair<TKey, ui32> TPartition::GetNewWriteKey(bool headCleared) {
 }
 
 void TPartition::AddNewWriteBlob(std::pair<TKey, ui32>& res, TEvKeyValue::TEvRequest* request, bool headCleared, const TActorContext& ctx) {
+    DBGTRACE("TPartition::AddNewWriteBlob");
     PQ_LOG_T("TPartition::AddNewWriteBlob.");
 
     const auto& key = res.first;
@@ -1415,6 +1601,7 @@ void TPartition::Handle(TEvPQ::TEvQuotaDeadlineCheck::TPtr&, const TActorContext
 }
 
 bool TPartition::ProcessWrites(TEvKeyValue::TEvRequest* request, TInstant, const TActorContext& ctx) {
+    DBGTRACE("TPartition::ProcessWrites");
     PQ_LOG_T("TPartition::ProcessWrites.");
     FilterDeadlinedWrites(ctx);
 
@@ -1499,6 +1686,7 @@ void TPartition::FilterDeadlinedWrites(const TActorContext& ctx) {
 
 
 void TPartition::HandleWrites(const TActorContext& ctx) {
+    DBGTRACE("TPartition::HandleWrites");
     if (!CanWrite()) {
         if (CanEnqueue()) {
             return;
@@ -1591,6 +1779,7 @@ bool TPartition::WaitingForSubDomainQuota(const TActorContext& ctx, const ui64 w
 }
 
 void TPartition::RequestBlobQuota() {
+    DBGTRACE("TPartition::RequestBlobQuota");
     PQ_LOG_T("TPartition::RequestBlobQuota.");
 
     // Request quota and write blob.
@@ -1609,6 +1798,7 @@ void TPartition::RequestBlobQuota() {
 }
 
 void TPartition::WritePendingBlob() {
+    DBGTRACE("TPartition::WritePendingBlob");
     Y_ABORT_UNLESS(CurrentStateFunc() == &TThis::StateWrite);
     Y_ABORT_UNLESS(PendingWriteRequest);
 

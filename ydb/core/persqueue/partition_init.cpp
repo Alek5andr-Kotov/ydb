@@ -1,5 +1,6 @@
 #include "partition.h"
 #include "partition_util.h"
+#include <ydb/library/dbgtrace/debug_trace.h>
 
 namespace NKikimr::NPQ {
 
@@ -142,6 +143,7 @@ TInitConfigStep::TInitConfigStep(TInitializer* initializer)
 }
 
 void TInitConfigStep::Execute(const TActorContext& ctx) {
+    DBGTRACE("TInitConfigStep::Execute");
     auto event = MakeHolder<TEvKeyValue::TEvRequest>();
     auto read = event->Record.AddCmdRead();
     read->SetKey(Partition()->GetKeyConfig());
@@ -150,6 +152,7 @@ void TInitConfigStep::Execute(const TActorContext& ctx) {
 }
 
 void TInitConfigStep::Handle(TEvKeyValue::TEvResponse::TPtr& ev, const TActorContext& ctx) {
+    DBGTRACE("TInitConfigStep::Handle(TEvKeyValue::TEvResponse)");
     if (!ValidateResponse(*this, ev, ctx)) {
         PoisonPill(ctx);
         return;
@@ -202,6 +205,7 @@ TInitInternalFieldsStep::TInitInternalFieldsStep(TInitializer* initializer)
 }
 
 void TInitInternalFieldsStep::Execute(const TActorContext &ctx) {
+    DBGTRACE("TInitInternalFieldsStep::Execute");
     Partition()->Initialize(ctx);
 
     Done(ctx);
@@ -217,6 +221,7 @@ TInitDiskStatusStep::TInitDiskStatusStep(TInitializer* initializer)
 }
 
 void TInitDiskStatusStep::Execute(const TActorContext& ctx) {
+    DBGTRACE("TInitDiskStatusStep::Execute");
     THolder<TEvKeyValue::TEvRequest> request(new TEvKeyValue::TEvRequest);
 
     AddCheckDiskRequest(request.Get(), Partition()->NumChannels);
@@ -225,6 +230,7 @@ void TInitDiskStatusStep::Execute(const TActorContext& ctx) {
 }
 
 void TInitDiskStatusStep::Handle(TEvKeyValue::TEvResponse::TPtr& ev, const TActorContext& ctx) {
+    DBGTRACE("TInitDiskStatusStep::Handle(TEvKeyValue::TEvResponse)");
     if (!ValidateResponse(*this, ev, ctx)) {
         PoisonPill(ctx);
         return;
@@ -251,6 +257,7 @@ TInitMetaStep::TInitMetaStep(TInitializer* initializer)
 }
 
 void TInitMetaStep::Execute(const TActorContext& ctx) {
+    DBGTRACE("TInitMetaStep::Execute");
     auto addKey = [](NKikimrClient::TKeyValueRequest& request, TKeyPrefix::EType type, const TPartitionId& partition) {
         auto read = request.AddCmdRead();
         TKeyPrefix key{type, partition};
@@ -266,6 +273,7 @@ void TInitMetaStep::Execute(const TActorContext& ctx) {
 }
 
 void TInitMetaStep::Handle(TEvKeyValue::TEvResponse::TPtr &ev, const TActorContext &ctx) {
+    DBGTRACE("TInitMetaStep::Handle(TEvKeyValue::TEvResponse)");
     if (!ValidateResponse(*this, ev, ctx)) {
         PoisonPill(ctx);
         return;
@@ -336,10 +344,12 @@ TInitInfoRangeStep::TInitInfoRangeStep(TInitializer* initializer)
 }
 
 void TInitInfoRangeStep::Execute(const TActorContext &ctx) {
+    DBGTRACE("TInitInfoRangeStep::Execute");
     RequestInfoRange(ctx, Partition()->Tablet, PartitionId(), "");
 }
 
 void TInitInfoRangeStep::Handle(TEvKeyValue::TEvResponse::TPtr &ev, const TActorContext &ctx) {
+    DBGTRACE("TInitInfoRangeStep::Handle(TEvKeyValue::TEvResponse)");
     if (!ValidateResponse(*this, ev, ctx)) {
         PoisonPill(ctx);
         return;
@@ -425,10 +435,12 @@ TInitDataRangeStep::TInitDataRangeStep(TInitializer* initializer)
 }
 
 void TInitDataRangeStep::Execute(const TActorContext &ctx) {
+    DBGTRACE("TInitDataRangeStep::Execute");
     RequestDataRange(ctx, Partition()->Tablet, PartitionId(), "");
 }
 
 void TInitDataRangeStep::Handle(TEvKeyValue::TEvResponse::TPtr &ev, const TActorContext &ctx) {
+    DBGTRACE("TInitDataRangeStep::Handle(TEvKeyValue::TEvResponse)");
     if (!ValidateResponse(*this, ev, ctx)) {
         PoisonPill(ctx);
         return;
@@ -465,6 +477,7 @@ void TInitDataRangeStep::Handle(TEvKeyValue::TEvResponse::TPtr &ev, const TActor
 }
 
 void TInitDataRangeStep::FillBlobsMetaData(const NKikimrClient::TKeyValueResponse::TReadRangeResult& range, const TActorContext& ctx) {
+    DBGTRACE("TInitDataRangeStep::FillBlobsMetaData");
     auto& endOffset = Partition()->EndOffset;
     auto& startOffset = Partition()->StartOffset;
     auto& head = Partition()->Head;
@@ -506,6 +519,7 @@ void TInitDataRangeStep::FillBlobsMetaData(const NKikimrClient::TKeyValueRespons
                         dataKeysBody.empty() ? 0 : dataKeysBody.back().CumulativeSize + dataKeysBody.back().Size});
     }
 
+    DBGTRACE("startOffset=" << startOffset << ", endOffset=" << endOffset);
     Y_ABORT_UNLESS(endOffset >= startOffset);
 }
 
@@ -546,6 +560,7 @@ TInitDataStep::TInitDataStep(TInitializer* initializer)
 }
 
 void TInitDataStep::Execute(const TActorContext &ctx) {
+    DBGTRACE("TInitDataStep::Execute");
     TVector<TString> keys;
     //form head request
     for (auto& p : Partition()->HeadKeys) {
@@ -566,6 +581,7 @@ void TInitDataStep::Execute(const TActorContext &ctx) {
 }
 
 void TInitDataStep::Handle(TEvKeyValue::TEvResponse::TPtr &ev, const TActorContext &ctx) {
+    DBGTRACE("TInitDataStep::Handle(TEvKeyValue::TEvResponse)");
     if (!ValidateResponse(*this, ev, ctx)) {
         PoisonPill(ctx);
         return;
@@ -651,11 +667,13 @@ void TInitDataStep::Handle(TEvKeyValue::TEvResponse::TPtr &ev, const TActorConte
 //
 
 void TPartition::Bootstrap(const TActorContext& ctx) {
+    DBGTRACE("TPartition::Bootstrap");
     Become(&TThis::StateInit);
     Initializer.Execute(ctx);
 }
 
 void TPartition::Initialize(const TActorContext& ctx) {
+    DBGTRACE("TPartition::Initialize");
     if (Config.GetPartitionConfig().HasMirrorFrom()) {
         ManageWriteTimestampEstimate = !Config.GetPartitionConfig().GetMirrorFrom().GetSyncWriteTime();
     } else {

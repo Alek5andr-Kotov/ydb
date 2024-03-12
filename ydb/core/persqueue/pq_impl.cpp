@@ -26,6 +26,7 @@
 
 #include <library/cpp/monlib/service/pages/templates.h>
 #include <util/string/escape.h>
+#include <ydb/library/dbgtrace/debug_trace.h>
 
 #define PQ_LOG_ERROR_AND_DIE(expr) \
     PQ_LOG_ERROR(expr); \
@@ -802,6 +803,7 @@ void TPersQueue::EndWriteConfig(const NKikimrClient::TResponse& resp, const TAct
 
 void TPersQueue::HandleConfigReadResponse(const NKikimrClient::TResponse& resp, const TActorContext& ctx)
 {
+    DBGTRACE("TPersQueue::HandleConfigReadResponse");
     bool ok =
         (resp.GetStatus() == NMsgBusProxy::MSTATUS_OK) &&
         (resp.ReadResultSize() == 3) &&
@@ -908,6 +910,7 @@ void TPersQueue::CreateOriginalPartition(const NKikimrPQ::TPQTabletConfig& confi
                                          bool newPartition,
                                          const TActorContext& ctx)
 {
+    DBGTRACE("TPersQueue::CreateOriginalPartition");
     TActorId actorId = ctx.Register(CreatePartitionActor(partitionId,
                                                          topicConverter,
                                                          config,
@@ -991,6 +994,7 @@ void TPersQueue::ReadConfig(const NKikimrClient::TKeyValueResponse::TReadResult&
                             const NKikimrClient::TKeyValueResponse::TReadRangeResult& readRange,
                             const TActorContext& ctx)
 {
+    DBGTRACE("TPersQueue::ReadConfig");
     Y_ABORT_UNLESS(read.HasStatus());
     if (read.GetStatus() != NKikimrProto::OK && read.GetStatus() != NKikimrProto::NODATA) {
         LOG_ERROR_S(ctx, NKikimrServices::PERSQUEUE,
@@ -1236,6 +1240,7 @@ void TPersQueue::EndWriteTabletState(const NKikimrClient::TResponse& resp, const
 
 void TPersQueue::Handle(TEvKeyValue::TEvResponse::TPtr& ev, const TActorContext& ctx)
 {
+    DBGTRACE("TPersQueue::Handle(TEvKeyValue::TEvResponse)");
     auto& resp = ev->Get()->Record;
 
     switch (resp.GetCookie()) {
@@ -1839,13 +1844,16 @@ void TPersQueue::InitResponseBuilder(const ui64 responseCookie, const ui32 count
 void TPersQueue::HandleGetMaxSeqNoRequest(const ui64 responseCookie, const TActorId& partActor,
                                           const NKikimrClient::TPersQueuePartitionRequest& req, const TActorContext& ctx)
 {
+    DBGTRACE("TPersQueue::HandleGetMaxSeqNoRequest");
     Y_ABORT_UNLESS(req.HasCmdGetMaxSeqNo());
     InitResponseBuilder(responseCookie, 1, COUNTER_LATENCY_PQ_GET_MAX_SEQ_NO);
     const auto& cmd = req.GetCmdGetMaxSeqNo();
     TVector<TString> ids;
     ids.reserve(cmd.SourceIdSize());
-    for (ui32 i = 0; i < cmd.SourceIdSize(); ++i)
+    for (ui32 i = 0; i < cmd.SourceIdSize(); ++i) {
+        DBGTRACE_LOG("SourceId=" << cmd.GetSourceId(i));
         ids.push_back(cmd.GetSourceId(i));
+    }
     THolder<TEvPQ::TEvGetMaxSeqNoRequest> event = MakeHolder<TEvPQ::TEvGetMaxSeqNoRequest>(responseCookie, ids);
     ctx.Send(partActor, event.Release());
 }
@@ -1983,6 +1991,7 @@ void TPersQueue::HandleUpdateWriteTimestampRequest(const ui64 responseCookie, co
 void TPersQueue::HandleWriteRequest(const ui64 responseCookie, const TActorId& partActor,
                                     const NKikimrClient::TPersQueuePartitionRequest& req, const TActorContext& ctx)
 {
+    DBGTRACE("TPersQueue::HandleWriteRequest");
     Y_ABORT_UNLESS(req.CmdWriteSize());
     MeteringSink.MayFlush(ctx.Now()); // To ensure hours' border;
     if (Config.GetMeteringMode() != NKikimrPQ::TPQTabletConfig::METERING_MODE_REQUEST_UNITS) {
@@ -2023,6 +2032,7 @@ void TPersQueue::HandleWriteRequest(const ui64 responseCookie, const TActorId& p
 
     for (ui32 i = 0; i < req.CmdWriteSize(); ++i) {
         const auto& cmd = req.GetCmdWrite(i);
+        DBGTRACE_LOG("HasSourceId=" << cmd.HasSourceId());
 
         if (AppData(ctx)->Counters && !AppData(ctx)->PQConfig.GetTopicsAreFirstClassCitizen()) {
             auto counters = AppData(ctx)->Counters;
@@ -2192,6 +2202,7 @@ void TPersQueue::HandleReserveBytesRequest(const ui64 responseCookie, const TAct
                                           const NKikimrClient::TPersQueuePartitionRequest& req, const TActorContext& ctx,
                                           const TActorId& pipeClient, const TActorId&)
 {
+    DBGTRACE("TPersQueue::HandleReserveBytesRequest");
     Y_ABORT_UNLESS(req.HasCmdReserveBytes());
 
     auto it = PipesInfo.find(pipeClient);
@@ -2229,9 +2240,11 @@ void TPersQueue::HandleGetOwnershipRequest(const ui64 responseCookie, const TAct
                                           const NKikimrClient::TPersQueuePartitionRequest& req, const TActorContext& ctx,
                                           const TActorId& pipeClient, const TActorId& sender)
 {
+    DBGTRACE("TPersQueue::HandleGetOwnershipRequest");
     Y_ABORT_UNLESS(req.HasCmdGetOwnership());
 
     const TString& owner = req.GetCmdGetOwnership().GetOwner();
+    DBGTRACE_LOG("owner=" << owner);
     if (owner.empty()) {
         ReplyError(ctx, responseCookie, NPersQueue::NErrorCode::BAD_REQUEST,
             TStringBuilder() << "empty owner in CmdGetOwnership request");
@@ -2701,6 +2714,7 @@ void TPersQueue::HandleEventForSupportivePartition(const ui64 responseCookie,
 
 void TPersQueue::Handle(TEvPersQueue::TEvRequest::TPtr& ev, const TActorContext& ctx)
 {
+    DBGTRACE("TPersQueue::Handle(TEvPersQueue::TEvRequest)");
     NKikimrClient::TPersQueueRequest& request = ev->Get()->Record;
     TString s = request.HasRequestId() ? request.GetRequestId() : "<none>";
     ui32 p = request.HasPartitionRequest() && request.GetPartitionRequest().HasPartition() ? request.GetPartitionRequest().GetPartition() : 0;
@@ -2966,6 +2980,7 @@ TPersQueue::TPersQueue(const TActorId& tablet, TTabletStorageInfo *info)
     , PipeClientCacheConfig(new NTabletPipe::TBoundedClientCacheConfig())
     , PipeClientCache(NTabletPipe::CreateBoundedClientCache(PipeClientCacheConfig, GetPipeClientConfig()))
 {
+    DBGTRACE("TPersQueue::TPersQueue");
     typedef TProtobufTabletCounters<
         NKeyValue::ESimpleCounters_descriptor,
         NKeyValue::ECumulativeCounters_descriptor,
@@ -2985,6 +3000,7 @@ TPersQueue::TPersQueue(const TActorId& tablet, TTabletStorageInfo *info)
 
 void TPersQueue::CreatedHook(const TActorContext& ctx)
 {
+    DBGTRACE("TPersQueue::CreatedHook");
     IsServerless = AppData(ctx)->FeatureFlags.GetEnableDbCounters(); //TODO: find out it via describe
     CacheActor = ctx.Register(new TPQCacheProxy(ctx.SelfID, TabletID()));
 
@@ -3039,6 +3055,7 @@ void TPersQueue::Handle(TEvMediatorTimecast::TEvRegisterTabletResult::TPtr& ev, 
 
 void TPersQueue::Handle(TEvInterconnect::TEvNodeInfo::TPtr& ev, const TActorContext& ctx)
 {
+    DBGTRACE("TPersQueue::Handle(TEvInterconnect::TEvNodeInfo)");
     Y_ABORT_UNLESS(ev->Get()->Node);
     DCId = ev->Get()->Node->Location.GetDataCenterId();
     ResourceMetrics = Executor()->GetResourceMetrics();

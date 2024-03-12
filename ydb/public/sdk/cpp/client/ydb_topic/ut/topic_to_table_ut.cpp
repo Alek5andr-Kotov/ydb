@@ -3,10 +3,12 @@
 #include <ydb/public/sdk/cpp/client/ydb_topic/topic.h>
 #include <ydb/public/sdk/cpp/client/ydb_table/table.h>
 #include <ydb/public/sdk/cpp/client/ydb_persqueue_core/ut/ut_utils/ut_utils.h>
+#include <ydb/services/persqueue_v1/actors/events.h>
 
 #include <library/cpp/logger/stream.h>
 
 #include <library/cpp/testing/unittest/registar.h>
+#include <ydb/library/dbgtrace/debug_trace.h>
 
 namespace NYdb::NTopic::NTests {
 
@@ -44,6 +46,7 @@ protected:
 
 protected:
     const TDriver& GetDriver() const;
+    NActors::TTestActorRuntime& GetActorRuntime();
 
 private:
     template<class E>
@@ -187,6 +190,11 @@ const TDriver& TFixture::GetDriver() const
     return *Driver;
 }
 
+NActors::TTestActorRuntime& TFixture::GetActorRuntime()
+{
+    return Setup->GetRuntime();
+}
+
 void TFixture::WriteToTopicWithInvalidTxId(bool invalidTxId)
 {
     auto tableSession = CreateSession();
@@ -319,6 +327,87 @@ Y_UNIT_TEST_F(WriteToTopic_Invalid_Session, TFixture)
 Y_UNIT_TEST_F(WriteToTopic_Invalid_Tx, TFixture)
 {
     WriteToTopicWithInvalidTxId(true);
+}
+
+Y_UNIT_TEST_F(WriteToTopic_XXX, TFixture)
+{
+    DBGTRACE("WriteToTopic_XXX");
+    auto createWriteSession = [](NTopic::TTopicClient& client, const TString& messageGroupId) {
+        NTopic::TWriteSessionSettings options;
+        options.Path(TEST_TOPIC);
+        options.MessageGroupId(messageGroupId);
+        options.ProducerId(messageGroupId);
+
+        return client.CreateWriteSession(options);
+    };
+
+    auto writeMessage = [](auto& ws, const TString& message) {
+        NTopic::TWriteMessage params(message);
+
+        auto event = ws->GetEvent(true);
+        UNIT_ASSERT(event.Defined() && std::holds_alternative<TWriteSessionEvent::TReadyToAcceptEvent>(event.GetRef()));
+        auto token = std::move(std::get<TWriteSessionEvent::TReadyToAcceptEvent>(event.GetRef()).ContinuationToken);
+
+        ws->Write(std::move(token), std::move(params));
+    };
+
+    using TEvWrite = NGRpcProxy::V1::TEvPQProxy::TEvTopicWrite;
+
+    //std::vector<TEvWrite> writes;
+    size_t writes = 0;
+
+    auto observerFunc = [&](TAutoPtr<IEventHandle>& ev) {
+        if (auto event = ev->CastAsLocal<TEvWrite>()) {
+            DBGTRACE_LOG("TEvPQProxy::TEvTopicWrite");
+            //writes.push_back(*event);
+            ++writes;
+        } else {
+            DBGTRACE_LOG("unknown event");
+        }
+        return TTestActorRuntimeBase::EEventAction::PROCESS;
+    };
+    auto prevObserverFunc = GetActorRuntime().SetObserverFunc(observerFunc);
+
+    NTopic::TTopicClient client(GetDriver());
+
+    auto ws0 = createWriteSession(client, TEST_MESSAGE_GROUP_ID + "_0");
+//    auto ws1 = createWriteSession(client, TEST_MESSAGE_GROUP_ID + "_1");
+
+    writeMessage(ws0, "A1");
+    writeMessage(ws0, "B1");
+    writeMessage(ws0, "B2");
+    writeMessage(ws0, "A2");
+    writeMessage(ws0, "A3");
+    writeMessage(ws0, "B3");
+
+    size_t acks = 0;
+
+    while (acks < 6) {
+        auto event = ws0->GetEvent(false);
+        if (!event) {
+//            event = ws1->GetEvent(false);
+//            if (!event) {
+                Sleep(TDuration::MilliSeconds(10));
+                continue;
+//            }
+        }
+
+        auto& v = event.GetRef();
+        if (auto e = std::get_if<TWriteSessionEvent::TAcksEvent>(&v); e) {
+            acks += e->Acks.size();
+            DBGTRACE_LOG("acks=" << acks);
+        } else if (auto e = std::get_if<TWriteSessionEvent::TReadyToAcceptEvent>(&v); e) {
+            DBGTRACE_LOG("ready to accept");
+            ;
+        } else if (auto e = std::get_if<TSessionClosedEvent>(&v); e) {
+            DBGTRACE_LOG("close session");
+            break;
+        }
+    }
+
+    UNIT_ASSERT_VALUES_EQUAL(acks, 6);
+
+    DBGTRACE_LOG("writes=" << writes);
 }
 
 Y_UNIT_TEST_F(WriteToTopic_Two_WriteSession, TFixture)

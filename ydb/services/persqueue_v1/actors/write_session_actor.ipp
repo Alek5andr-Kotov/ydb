@@ -22,6 +22,7 @@
 #include <util/string/vector.h>
 #include <util/string/escape.h>
 #include <util/string/printf.h>
+#include <ydb/library/dbgtrace/debug_trace.h>
 
 
 using namespace NActors;
@@ -357,6 +358,7 @@ void TWriteSessionActor<UseMigrationProtocol>::CheckACL(const TActorContext& ctx
 
 template<bool UseMigrationProtocol>
 void TWriteSessionActor<UseMigrationProtocol>::Handle(typename TEvWriteInit::TPtr& ev, const TActorContext& ctx) {
+    DBGTRACE("TWriteSessionActor::Handle(TEvWriteInit)");
     THolder<TEvWriteInit> event(ev->Release());
 
     if (State != ES_CREATED) {
@@ -427,6 +429,7 @@ void TWriteSessionActor<UseMigrationProtocol>::Handle(typename TEvWriteInit::TPt
             return !InitRequest.message_group_id().empty() ? InitRequest.message_group_id() : InitRequest.producer_id();
         }
     }();
+    DBGTRACE_LOG("SourceId=" << SourceId);
     LOG_INFO_S(ctx, NKikimrServices::PQ_WRITE_PROXY, "session request cookie: " << Cookie << " " << InitRequest.ShortDebugString() << " from " << PeerName);
     if (!UseDeduplication) {
         LOG_DEBUG_S(ctx, NKikimrServices::PQ_WRITE_PROXY, "session request cookie: " << Cookie << ". Disable deduplication for empty producer id");
@@ -680,6 +683,9 @@ void TWriteSessionActor<UseMigrationProtocol>::ProceedPartition(const ui32 parti
 template <bool UseMigrationProtocol>
 void TWriteSessionActor<UseMigrationProtocol>::CreatePartitionWriterCache(const TActorContext& ctx)
 {
+    DBGTRACE("TWriteSessionActor::CreatePartitionWriterCache");
+    DBGTRACE_LOG("UseDeduplication=" << UseDeduplication);
+    DBGTRACE_LOG("SourceId=" << SourceId);
     NPQ::TPartitionWriterOpts opts;
 
     opts.WithDeduplication(UseDeduplication);
@@ -1081,6 +1087,8 @@ void TWriteSessionActor<UseMigrationProtocol>::Handle(TEvTabletPipe::TEvClientDe
 
 template<bool UseMigrationProtocol>
 void TWriteSessionActor<UseMigrationProtocol>::PrepareRequest(THolder<TEvWrite>&& ev, const TActorContext& ctx) {
+    DBGTRACE("TWriteSessionActor::PrepareRequest");
+    DBGTRACE_LOG("SourceId=" << SourceId);
     const auto& writeRequest = ev->Request.write_request();
 
     if constexpr (!UseMigrationProtocol) {
@@ -1304,6 +1312,7 @@ void TWriteSessionActor<UseMigrationProtocol>::Handle(NGRpcService::TGRpcRequest
 
 template<bool UseMigrationProtocol>
 void TWriteSessionActor<UseMigrationProtocol>::Handle(typename TEvWrite::TPtr& ev, const TActorContext& ctx) {
+    DBGTRACE("TWriteSessionActor::Handle(TEvWrite)");
 
     RequestNotChecked = true;
 
@@ -1332,6 +1341,7 @@ void TWriteSessionActor<UseMigrationProtocol>::Handle(typename TEvWrite::TPtr& e
 
     const i32 messageCount = writeRequest.sequence_numbers_size();
     const i32 blockCount = writeRequest.blocks_offsets_size();
+    DBGTRACE_LOG("messageCount=" << messageCount << ", blockCount=" << blockCount);
     if (messageCount == 0) {
         CloseSession(TStringBuilder() << "messages meta repeated fields are empty, write request contains no messages", PersQueue::ErrorCode::BAD_REQUEST, ctx);
         return;

@@ -21,6 +21,7 @@
 #include <util/string/builder.h>
 
 #include <library/cpp/retry/retry_policy.h>
+#include <ydb/library/dbgtrace/debug_trace.h>
 
 namespace NKikimr::NPQ {
 
@@ -166,11 +167,15 @@ class TPartitionWriter: public TActorBootstrapped<TPartitionWriter>, private TRl
     }
 
     void InitResult(const TString& reason, NKikimrClient::TResponse&& response) {
+        DBGTRACE("TPartitionWriter::InitResult");
+        DBGTRACE_LOG("reason=" << reason);
         SendInitResult(reason, std::move(response));
         BecomeZombie(EErrorCode::InternalError, "Init error");
     }
 
     void InitResult(const TString& ownerCookie, const TEvPartitionWriter::TEvInitResult::TSourceIdInfo& sourceIdInfo, ui64 writeId) {
+        DBGTRACE("TPartitionWriter::InitResult");
+        DBGTRACE_LOG("ownerCookie=" << ownerCookie);
         SendInitResult(ownerCookie, sourceIdInfo, writeId);
     }
 
@@ -305,6 +310,8 @@ class TPartitionWriter: public TActorBootstrapped<TPartitionWriter>, private TRl
     /// GetOwnership
 
     void GetOwnership() {
+        DBGTRACE("TPartitionWriter::GetOwnership");
+        DBGTRACE_LOG("SourceId=" << SourceId);
         auto ev = MakeRequest(PartitionId, PipeClient);
 
         auto& request = *ev->Record.MutablePartitionRequest();
@@ -328,6 +335,7 @@ class TPartitionWriter: public TActorBootstrapped<TPartitionWriter>, private TRl
     }
 
     void HandleOwnership(TEvPersQueue::TEvResponse::TPtr& ev) {
+        DBGTRACE("TPartitionWriter::HandleOwnership");
         auto& record = ev->Get()->Record;
 
         TString error;
@@ -351,6 +359,7 @@ class TPartitionWriter: public TActorBootstrapped<TPartitionWriter>, private TRl
     /// GetMaxSeqNo
 
     void GetMaxSeqNo() {
+        DBGTRACE("TPartitionWriter::GetMaxSeqNo");
         auto ev = MakeRequest(PartitionId, PipeClient);
 
         auto& cmd = *ev->Record.MutablePartitionRequest()->MutableCmdGetMaxSeqNo();
@@ -370,6 +379,7 @@ class TPartitionWriter: public TActorBootstrapped<TPartitionWriter>, private TRl
     }
 
     void HandleMaxSeqNo(TEvPersQueue::TEvResponse::TPtr& ev, const TActorContext& ctx) {
+        DBGTRACE("TPartitionWriter::HandleMaxSeqNo");
         auto& record = ev->Get()->Record;
 
         TString error;
@@ -788,12 +798,15 @@ public:
         , SourceId(opts.UseDeduplication ? opts.SourceId : CreateGuidAsString())
         , Opts(opts)
     {
+        DBGTRACE("TPartitionWriter::TPartitionWriter");
+        DBGTRACE_LOG("SourceId=" << SourceId);
         if (Opts.MeteringMode) {
             SetMeteringMode(*Opts.MeteringMode);
         }
     }
 
     void Bootstrap(const TActorContext& ctx) {
+        DBGTRACE("TPartitionWriter::Bootstrap");
         NTabletPipe::TClientConfig config;
         config.RetryPolicy = {
             .RetryLimitCount = 6,

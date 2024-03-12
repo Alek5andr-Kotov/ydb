@@ -21,6 +21,7 @@
 #include <util/folder/path.h>
 #include <util/string/escape.h>
 #include <util/system/byteorder.h>
+#include <ydb/library/dbgtrace/debug_trace.h>
 
 namespace NKikimr::NPQ {
 
@@ -137,6 +138,8 @@ ui64 GetOffsetEstimate(const std::deque<TDataKey>& container, TInstant timestamp
 }
 
 void TPartition::ReplyError(const TActorContext& ctx, const ui64 dst, NPersQueue::NErrorCode::EErrorCode errorCode, const TString& error) {
+    DBGTRACE("TPartition::ReplyError");
+    DBGTRACE_LOG("error=" << error);
     ReplyPersQueueError(
         dst == 0 ? ctx.SelfID : Tablet, ctx, TabletID, TopicName(), Partition,
         TabletCounters, NKikimrServices::PERSQUEUE, dst, errorCode, error, true
@@ -223,6 +226,7 @@ TPartition::TPartition(ui64 tabletId, const TPartitionId& partition, const TActo
     , WriteLagMs(TDuration::Minutes(1), 100)
     , LastEmittedHeartbeat(TRowVersion::Min())
 {
+    DBGTRACE("TPartition::TPartition");
     TabletCounters.Populate(Counters);
 
     if (!distrTxs.empty()) {
@@ -374,6 +378,7 @@ void TPartition::AddMetaKey(TEvKeyValue::TEvRequest* request) {
 }
 
 bool TPartition::CleanUp(TEvKeyValue::TEvRequest* request, const TActorContext& ctx) {
+    DBGTRACE("TPartition::CleanUp");
     bool haveChanges = CleanUpBlobs(request, ctx);
 
     LOG_TRACE_S(ctx, NKikimrServices::PERSQUEUE, "Have " << request->Record.CmdDeleteRangeSize() << " items to delete old stuff");
@@ -976,6 +981,7 @@ void TPartition::Handle(TEvPQ::TEvGetWriteInfoRequest::TPtr& ev, const TActorCon
 }
 
 void TPartition::Handle(TEvPQ::TEvGetMaxSeqNoRequest::TPtr& ev, const TActorContext& ctx) {
+    DBGTRACE("TPartition::Handle(TEvPQ::TEvGetMaxSeqNoRequest)");
     auto response = MakeHolder<TEvPQ::TEvProxyResponse>(ev->Get()->Cookie);
     NKikimrClient::TResponse& resp = *response->Response;
 
@@ -986,6 +992,7 @@ void TPartition::Handle(TEvPQ::TEvGetMaxSeqNoRequest::TPtr& ev, const TActorCont
     for (const auto& sourceId : ev->Get()->SourceIds) {
         auto& protoInfo = *result.AddSourceIdInfo();
         protoInfo.SetSourceId(sourceId);
+        DBGTRACE_LOG("sourceId=" << sourceId);
 
         auto info = SourceManager.Get(sourceId);
         if (info.State == TSourceIdInfo::EState::Unknown) {
@@ -1374,6 +1381,7 @@ void TPartition::Handle(NReadQuoterEvents::TEvQuotaUpdated::TPtr& ev, const TAct
 }
 
 void TPartition::Handle(TEvKeyValue::TEvResponse::TPtr& ev, const TActorContext& ctx) {
+    DBGTRACE("TPartition::Handle(TEvKeyValue::TEvResponse)");
     auto& response = ev->Get()->Record;
 
     //check correctness of response
@@ -1518,7 +1526,8 @@ size_t TPartition::GetUserActCount(const TString& consumer) const
 
 void TPartition::ProcessTxsAndUserActs(const TActorContext& ctx)
 {
-    if (UsersInfoWriteInProgress || UserActionAndTransactionEvents.empty() || TxInProgress) {
+    DBGTRACE("TPartition::ProcessTxsAndUserActs");
+    if (UsersInfoWriteInProgress || UserActionAndTransactionEvents.empty() || TxInProgress || WriteInProgress) {
         return;
     }
 
@@ -1531,8 +1540,10 @@ void TPartition::ProcessTxsAndUserActs(const TActorContext& ctx)
 
 void TPartition::ContinueProcessTxsAndUserActs(const TActorContext& ctx)
 {
+    DBGTRACE("TPartition::ContinueProcessTxsAndUserActs");
     Y_ABORT_UNLESS(!UsersInfoWriteInProgress);
     Y_ABORT_UNLESS(!TxInProgress);
+    Y_ABORT_UNLESS(!WriteInProgress);
 
     if (!UserActionAndTransactionEvents.empty()) {
         auto visitor = [this, &ctx](const auto& event) -> bool {
@@ -1561,6 +1572,11 @@ void TPartition::ContinueProcessTxsAndUserActs(const TActorContext& ctx)
         }
     }
 
+    if (WriteInProgress) {
+        HandleWrites(ctx);
+        return;
+    }
+
     THolder<TEvKeyValue::TEvRequest> request(new TEvKeyValue::TEvRequest);
     request->Record.SetCookie(SET_OFFSET_COOKIE);
 
@@ -1582,6 +1598,17 @@ void TPartition::RemoveDistrTx()
 
     UserActionAndTransactionEvents.pop_front();
     PendingPartitionConfig = nullptr;
+}
+
+bool TPartition::ProcessUserActionOrTransaction(const TEvPQ::TEvWrite& event,
+                                                const TActorContext& ctx)
+{
+    DBGTRACE("TPartition::ProcessUserActionOrTransaction(TEvPQ::TEvWrite)");
+    Y_ABORT_UNLESS(CurrentStateFunc() == &TThis::StateIdle);
+    HandleOnWrite(event, ctx);
+    WriteInProgress = true;
+    UserActionAndTransactionEvents.pop_front();
+    return true;
 }
 
 bool TPartition::ProcessUserActionOrTransaction(TTransaction& t,
@@ -1828,6 +1855,7 @@ void TPartition::BeginChangePartitionConfig(const NKikimrPQ::TPQTabletConfig& co
 }
 
 void TPartition::OnProcessTxsAndUserActsWriteComplete(ui64 cookie, const TActorContext& ctx) {
+    DBGTRACE("TPartition::OnProcessTxsAndUserActsWriteComplete");
     Y_ABORT_UNLESS(cookie == SET_OFFSET_COOKIE);
 
     if (ChangeConfig) {
@@ -2560,6 +2588,7 @@ ui32 TPartition::NextChannel(bool isHead, ui32 blobSize) {
 }
 
 void TPartition::Handle(TEvPQ::TEvApproveWriteQuota::TPtr& ev, const TActorContext& ctx) {
+    DBGTRACE("TPartition::Handle(TEvPQ::TEvApproveWriteQuota)");
     const ui64 cookie = ev->Get()->Cookie;
     LOG_DEBUG_S(
             ctx, NKikimrServices::PERSQUEUE,
