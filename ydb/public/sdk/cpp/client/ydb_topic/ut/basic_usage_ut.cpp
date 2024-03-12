@@ -16,6 +16,7 @@
 #include <library/cpp/threading/future/async.h>
 
 #include <future>
+#include <ydb/library/dbgtrace/debug_trace.h>
 
 namespace NYdb::NTopic::NTests {
 
@@ -602,6 +603,7 @@ Y_UNIT_TEST_SUITE(BasicUsage) {
     }
 
     Y_UNIT_TEST(ReadSessionCorrectClose) {
+        DBGTRACE("BasicUsage::ReadSessionCorrectClose");
 
         auto setup = std::make_shared<NPersQueue::NTests::TPersQueueYdbSdkTestSetup>(TEST_CASE_NAME);
 
@@ -612,16 +614,20 @@ Y_UNIT_TEST_SUITE(BasicUsage) {
         writeSettings.CompressionExecutor(executor);
 
         auto& client = setup->GetPersQueueClient();
+        DBGTRACE_LOG("create write session");
         auto session = client.CreateSimpleBlockingWriteSession(writeSettings);
 
+        DBGTRACE_LOG("begin write messages");
         ui32 count = 7000;
         std::string message(2'000, 'x');
         for (ui32 i = 1; i <= count; ++i) {
             bool res = session->Write(message);
             UNIT_ASSERT(res);
         }
+        DBGTRACE_LOG("end write messages");
         bool res = session->Close(TDuration::Seconds(10));
         UNIT_ASSERT(res);
+        DBGTRACE_LOG("close write session");
 
         std::shared_ptr<NYdb::NTopic::IReadSession> ReadSession;
 

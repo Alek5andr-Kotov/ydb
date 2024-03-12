@@ -610,7 +610,7 @@ void TPartition::HandleWriteResponse(const TActorContext& ctx) {
 void TPartition::HandleOnWrite(const TEvPQ::TEvWrite& ev, const TActorContext& ctx) {
     DBGTRACE("TPartition::HandleOnWrite(TEvPQ::TEvWrite)");
     DBGTRACE_LOG("Cookie=" << ev.Cookie);
-    DBGTRACE_LOG("MsgNo=" << ev.MessageNo);
+    DBGTRACE_LOG("MessageNo=" << ev.MessageNo);
     DBGTRACE_LOG("OwnerCookie=" << ev.OwnerCookie);
     DBGTRACE_LOG("Offset=" << ev.Offset);
     for (size_t i = 0; i < ev.Msgs.size(); ++i) {
