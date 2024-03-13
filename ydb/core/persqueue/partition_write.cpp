@@ -80,16 +80,23 @@ void TPartition::ReplyWrite(
     ctx.Send(Tablet, response.Release());
 }
 
-void TPartition::HandleOnIdle(TEvPQ::TEvUpdateAvailableSize::TPtr&, const TActorContext& ctx) {
+//void TPartition::HandleOnIdle(TEvPQ::TEvUpdateAvailableSize::TPtr&, const TActorContext& ctx) {
+//    DBGTRACE("TPartition::HandleOnIdle(TEvPQ::TEvUpdateAvailableSize)");
+//    UpdateAvailableSize(ctx);
+//    HandleWrites(ctx);
+//}
+
+void TPartition::HandleOnWrite(const TEvPQ::TEvUpdateAvailableSize&, const TActorContext& ctx)
+{
+    DBGTRACE("TPartition::HandleOnWrite(TEvPQ::TEvUpdateAvailableSize)");
     UpdateAvailableSize(ctx);
-    HandleWrites(ctx);
 }
 
-void TPartition::HandleOnWrite(TEvPQ::TEvUpdateAvailableSize::TPtr&, const TActorContext& ctx) {
-    PQ_LOG_T("TPartition::HandleOnWrite TEvUpdateAvailableSize.");
-
-    UpdateAvailableSize(ctx);
-}
+//void TPartition::HandleOnWrite(TEvPQ::TEvUpdateAvailableSize::TPtr&, const TActorContext& ctx) {
+//    PQ_LOG_T("TPartition::HandleOnWrite TEvUpdateAvailableSize.");
+//
+//    UpdateAvailableSize(ctx);
+//}
 
 void TPartition::CancelAllWritesOnIdle(const TActorContext& ctx) {
     PQ_LOG_T("TPartition::CancelAllWritesOnIdle.");
@@ -114,6 +121,7 @@ void TPartition::CancelAllWritesOnIdle(const TActorContext& ctx) {
 }
 
 void TPartition::FailBadClient(const TActorContext& ctx) {
+    DBGTRACE("TPartition::FailBadClient");
     PQ_LOG_T("TPartition::FailBadClient.");
 
     for (auto it = Owners.begin(); it != Owners.end();) {
@@ -261,30 +269,11 @@ void TPartition::Handle(TEvPQ::TEvReserveBytes::TPtr& ev, const TActorContext& c
     DBGTRACE_LOG("Cookie=" << ev->Get()->Cookie);
     DBGTRACE_LOG("OwnerCookie=" << ev->Get()->OwnerCookie);
     DBGTRACE_LOG("MessageNo=" << ev->Get()->MessageNo);
-    PQ_LOG_T("TPartition::HandleOnWrite TEvReserveBytes.");
 
-    const TString& ownerCookie = ev->Get()->OwnerCookie;
-    TStringBuf owner = TOwnerInfo::GetOwnerFromOwnerCookie(ownerCookie);
-    const ui64& messageNo = ev->Get()->MessageNo;
-
-    auto it = Owners.find(owner);
-    if (it == Owners.end() || it->second.OwnerCookie != ownerCookie) {
-        ReplyError(ctx, ev->Get()->Cookie, NPersQueue::NErrorCode::BAD_REQUEST, "ReserveRequest from dead ownership session");
-        return;
-    }
-
-    if (messageNo != it->second.NextMessageNo) {
-        ReplyError(ctx, ev->Get()->Cookie, NPersQueue::NErrorCode::BAD_REQUEST,
-            TStringBuilder() << "reorder in reserve requests, waiting " << it->second.NextMessageNo << ", but got " << messageNo);
-        DropOwner(it, ctx);
-        ProcessChangeOwnerRequests(ctx);
-        return;
-    }
-
-    ++it->second.NextMessageNo;
-    DBGTRACE_LOG("NextMessageNo=" << it->second.NextMessageNo);
-    ReserveRequests.push_back(ev->Release());
-    ProcessReserveRequests(ctx);
+    TSimpleSharedPtr<TEvPQ::TEvReserveBytes> event(ev->Release());
+    UserActionAndTransactionEvents.emplace_back(std::move(event));
+    DBGTRACE_LOG("UserActionAndTransactionEvents.size=" << UserActionAndTransactionEvents.size());
+    ProcessTxsAndUserActs(ctx);
 }
 
 //void TPartition::HandleOnIdle(const TEvPQ::TEvWrite& ev, const TActorContext& ctx) {
@@ -293,12 +282,43 @@ void TPartition::Handle(TEvPQ::TEvReserveBytes::TPtr& ev, const TActorContext& c
 ////    HandleWrites(ctx);
 //}
 
-void TPartition::Handle(TEvPQ::TEvWrite::TPtr& ev, const TActorContext& ctx) {
-    DBGTRACE("TPartition::Handle(TEvPQ::TEvWrite)");
-    TSimpleSharedPtr<TEvPQ::TEvWrite> event(ev->Release());
+template <class T>
+void TPartition::EnqueueEvent(TAutoPtr<TEventHandle<T>>& ev, const TActorContext& ctx)
+{
+    TSimpleSharedPtr<T> event(ev->Release());
     UserActionAndTransactionEvents.emplace_back(std::move(event));
     DBGTRACE_LOG("UserActionAndTransactionEvents.size=" << UserActionAndTransactionEvents.size());
     ProcessTxsAndUserActs(ctx);
+}
+
+void TPartition::Handle(TEvPQ::TEvDeregisterMessageGroup::TPtr& ev, const TActorContext& ctx)
+{
+    DBGTRACE("TPartition::Handle(TEvPQ::TEvDeregisterMessageGroup)");
+    EnqueueEvent(ev, ctx);
+}
+
+void TPartition::Handle(TEvPQ::TEvRegisterMessageGroup::TPtr& ev, const TActorContext& ctx)
+{
+    DBGTRACE("TPartition::Handle(TEvPQ::TEvRegisterMessageGroup)");
+    EnqueueEvent(ev, ctx);
+}
+
+void TPartition::Handle(TEvPQ::TEvSplitMessageGroup::TPtr& ev, const TActorContext& ctx)
+{
+    DBGTRACE("TPartition::Handle(TEvPQ::TEvSplitMessageGroup)");
+    EnqueueEvent(ev, ctx);
+}
+
+void TPartition::Handle(TEvPQ::TEvUpdateAvailableSize::TPtr& ev, const TActorContext& ctx)
+{
+    DBGTRACE("TPartition::Handle(TEvPQ::TEvUpdateAvailableSize)");
+    EnqueueEvent(ev, ctx);
+}
+
+void TPartition::Handle(TEvPQ::TEvWrite::TPtr& ev, const TActorContext& ctx)
+{
+    DBGTRACE("TPartition::Handle(TEvPQ::TEvWrite)");
+    EnqueueEvent(ev, ctx);
 }
 
 //void TPartition::HandleOnIdle(TEvPQ::TEvWrite::TPtr& ev, const TActorContext& ctx) {
@@ -525,7 +545,7 @@ void TPartition::Handle(TEvPQ::TEvHandleWriteResponse::TPtr&, const TActorContex
 void TPartition::HandleWriteResponse(const TActorContext& ctx) {
     DBGTRACE("TPartition::HandleWriteResponse");
     PQ_LOG_T("TPartition::HandleWriteResponse.");
-    Y_ABORT_UNLESS(CurrentStateFunc() == &TThis::StateWrite);
+    //Y_ABORT_UNLESS(CurrentStateFunc() == &TThis::StateWrite);
     ui64 prevEndOffset = EndOffset;
 
     ui32 totalLatencyMs = (ctx.Now() - WriteCycleStartTime).MilliSeconds();
@@ -603,7 +623,7 @@ void TPartition::HandleWriteResponse(const TActorContext& ctx) {
     ProcessTimestampsForNewData(prevEndOffset, ctx);
 
     //HandleWrites(ctx);
-    Become(&TThis::StateIdle);
+    BecomeIdle(ctx);
     WriteInProgress = false;
 }
 
@@ -649,6 +669,7 @@ void TPartition::HandleOnWrite(const TEvPQ::TEvWrite& ev, const TActorContext& c
         auto it = Owners.find(owner);
 
         if (it == Owners.end() || it->second.NeedResetOwner) {
+            DBGTRACE_LOG("IsEnd=" << (it == Owners.end()));
             ReplyError(ctx, ev.Cookie, NPersQueue::NErrorCode::WRONG_COOKIE,
                 TStringBuilder() << "new GetOwnership request needed for owner " << owner);
             return;
@@ -875,95 +896,148 @@ void TPartition::HandleOnWrite(const TEvPQ::TEvWrite& ev, const TActorContext& c
 ////    UpdateWriteBufferIsFullState(ctx.Now());
 //}
 
-void TPartition::HandleOnIdle(TEvPQ::TEvRegisterMessageGroup::TPtr& ev, const TActorContext& ctx) {
-    HandleOnWrite(ev, ctx);
-    HandleWrites(ctx);
-}
+//void TPartition::HandleOnIdle(TEvPQ::TEvRegisterMessageGroup::TPtr& ev, const TActorContext& ctx) {
+//    DBGTRACE("TPartition::HandleOnIdle(TEvPQ::TEvRegisterMessageGroup)");
+//    HandleOnWrite(ev, ctx);
+//    HandleWrites(ctx);
+//}
 
-void TPartition::HandleOnWrite(TEvPQ::TEvRegisterMessageGroup::TPtr& ev, const TActorContext& ctx) {
+void TPartition::HandleOnWrite(TEvPQ::TEvRegisterMessageGroup& ev, const TActorContext& ctx)
+{
     PQ_LOG_T("TPartition::HandleOnWrite TEvRegisterMessageGroup.");
 
-    const auto& body = ev->Get()->Body;
+    const auto& body = ev.Body;
 
     auto it = SourceIdStorage.GetInMemorySourceIds().find(body.SourceId);
     if (it != SourceIdStorage.GetInMemorySourceIds().end()) {
         if (!it->second.Explicit) {
-            return ReplyError(ctx, ev->Get()->Cookie, NPersQueue::NErrorCode::BAD_REQUEST,
+            return ReplyError(ctx, ev.Cookie, NPersQueue::NErrorCode::BAD_REQUEST,
                 "Trying to register implicitly registered SourceId");
         }
 
         switch (it->second.State) {
         case TSourceIdInfo::EState::Registered:
-            return ReplyOk(ctx, ev->Get()->Cookie);
+            return ReplyOk(ctx, ev.Cookie);
         case TSourceIdInfo::EState::PendingRegistration:
             if (!body.AfterSplit) {
-                return ReplyError(ctx, ev->Get()->Cookie, NPersQueue::NErrorCode::BAD_REQUEST,
+                return ReplyError(ctx, ev.Cookie, NPersQueue::NErrorCode::BAD_REQUEST,
                     "AfterSplit must be set");
             }
             break;
         default:
-            return ReplyError(ctx, ev->Get()->Cookie, NPersQueue::NErrorCode::ERROR,
+            return ReplyError(ctx, ev.Cookie, NPersQueue::NErrorCode::ERROR,
                 TStringBuilder() << "Unknown state: " << static_cast<ui32>(it->second.State));
         }
     } else if (body.AfterSplit) {
-        return ReplyError(ctx, ev->Get()->Cookie, NPersQueue::NErrorCode::BAD_REQUEST,
+        return ReplyError(ctx, ev.Cookie, NPersQueue::NErrorCode::BAD_REQUEST,
             "SourceId not found, registration cannot be completed");
     }
 
-    EmplaceRequest(TRegisterMessageGroupMsg(*ev->Get()), ctx);
+    EmplaceRequest(TRegisterMessageGroupMsg(ev), ctx);
 }
 
-void TPartition::HandleOnIdle(TEvPQ::TEvDeregisterMessageGroup::TPtr& ev, const TActorContext& ctx) {
-    HandleOnWrite(ev, ctx);
-    HandleWrites(ctx);
-}
+//void TPartition::HandleOnWrite(TEvPQ::TEvRegisterMessageGroup::TPtr& ev, const TActorContext& ctx) {
+//    PQ_LOG_T("TPartition::HandleOnWrite TEvRegisterMessageGroup.");
+//
+//    const auto& body = ev->Get()->Body;
+//
+//    auto it = SourceIdStorage.GetInMemorySourceIds().find(body.SourceId);
+//    if (it != SourceIdStorage.GetInMemorySourceIds().end()) {
+//        if (!it->second.Explicit) {
+//            return ReplyError(ctx, ev->Get()->Cookie, NPersQueue::NErrorCode::BAD_REQUEST,
+//                "Trying to register implicitly registered SourceId");
+//        }
+//
+//        switch (it->second.State) {
+//        case TSourceIdInfo::EState::Registered:
+//            return ReplyOk(ctx, ev->Get()->Cookie);
+//        case TSourceIdInfo::EState::PendingRegistration:
+//            if (!body.AfterSplit) {
+//                return ReplyError(ctx, ev->Get()->Cookie, NPersQueue::NErrorCode::BAD_REQUEST,
+//                    "AfterSplit must be set");
+//            }
+//            break;
+//        default:
+//            return ReplyError(ctx, ev->Get()->Cookie, NPersQueue::NErrorCode::ERROR,
+//                TStringBuilder() << "Unknown state: " << static_cast<ui32>(it->second.State));
+//        }
+//    } else if (body.AfterSplit) {
+//        return ReplyError(ctx, ev->Get()->Cookie, NPersQueue::NErrorCode::BAD_REQUEST,
+//            "SourceId not found, registration cannot be completed");
+//    }
+//
+//    EmplaceRequest(TRegisterMessageGroupMsg(*ev->Get()), ctx);
+//}
 
-void TPartition::HandleOnWrite(TEvPQ::TEvDeregisterMessageGroup::TPtr& ev, const TActorContext& ctx) {
+//void TPartition::HandleOnIdle(TEvPQ::TEvDeregisterMessageGroup::TPtr& ev, const TActorContext& ctx) {
+//    DBGTRACE("TPartition::HandleOnIdle(TEvPQ::TEvDeregisterMessageGroup)");
+//    HandleOnWrite(ev, ctx);
+//    HandleWrites(ctx);
+//}
+
+void TPartition::HandleOnWrite(TEvPQ::TEvDeregisterMessageGroup& ev, const TActorContext& ctx)
+{
     PQ_LOG_T("TPartition::HandleOnWrite TEvDeregisterMessageGroup.");
 
-    const auto& body = ev->Get()->Body;
+    const auto& body = ev.Body;
 
     auto it = SourceIdStorage.GetInMemorySourceIds().find(body.SourceId);
     if (it == SourceIdStorage.GetInMemorySourceIds().end()) {
-        return ReplyError(ctx, ev->Get()->Cookie, NPersQueue::NErrorCode::SOURCEID_DELETED,
+        return ReplyError(ctx, ev.Cookie, NPersQueue::NErrorCode::SOURCEID_DELETED,
             "SourceId doesn't exist");
     }
 
-    EmplaceRequest(TDeregisterMessageGroupMsg(*ev->Get()), ctx);
+    EmplaceRequest(TDeregisterMessageGroupMsg(ev), ctx);
 }
 
-void TPartition::HandleOnIdle(TEvPQ::TEvSplitMessageGroup::TPtr& ev, const TActorContext& ctx) {
-    HandleOnWrite(ev, ctx);
-    HandleWrites(ctx);
-}
+//void TPartition::HandleOnWrite(TEvPQ::TEvDeregisterMessageGroup::TPtr& ev, const TActorContext& ctx) {
+//    PQ_LOG_T("TPartition::HandleOnWrite TEvDeregisterMessageGroup.");
+//
+//    const auto& body = ev->Get()->Body;
+//
+//    auto it = SourceIdStorage.GetInMemorySourceIds().find(body.SourceId);
+//    if (it == SourceIdStorage.GetInMemorySourceIds().end()) {
+//        return ReplyError(ctx, ev->Get()->Cookie, NPersQueue::NErrorCode::SOURCEID_DELETED,
+//            "SourceId doesn't exist");
+//    }
+//
+//    EmplaceRequest(TDeregisterMessageGroupMsg(*ev->Get()), ctx);
+//}
 
-void TPartition::HandleOnWrite(TEvPQ::TEvSplitMessageGroup::TPtr& ev, const TActorContext& ctx) {
+//void TPartition::HandleOnIdle(TEvPQ::TEvSplitMessageGroup::TPtr& ev, const TActorContext& ctx) {
+//    DBGTRACE("TPartition::HandleOnIdle(TEvPQ::TEvSplitMessageGroup)");
+//    HandleOnWrite(ev, ctx);
+//    HandleWrites(ctx);
+//}
+
+void TPartition::HandleOnWrite(const TEvPQ::TEvSplitMessageGroup& ev, const TActorContext& ctx)
+{
     PQ_LOG_T("TPartition::HandleOnWrite TEvSplitMessageGroup.");
 
-    if (ev->Get()->Deregistrations.size() > 1) {
-        return ReplyError(ctx, ev->Get()->Cookie, NPersQueue::NErrorCode::BAD_REQUEST,
+    if (ev.Deregistrations.size() > 1) {
+        return ReplyError(ctx, ev.Cookie, NPersQueue::NErrorCode::BAD_REQUEST,
             TStringBuilder() << "Currently, single deregistrations are supported");
     }
 
-    TSplitMessageGroupMsg msg(ev->Get()->Cookie);
+    TSplitMessageGroupMsg msg(ev.Cookie);
 
-    for (auto& body : ev->Get()->Deregistrations) {
+    for (auto& body : ev.Deregistrations) {
         auto it = SourceIdStorage.GetInMemorySourceIds().find(body.SourceId);
         if (it != SourceIdStorage.GetInMemorySourceIds().end()) {
             msg.Deregistrations.push_back(std::move(body));
         } else {
-            return ReplyError(ctx, ev->Get()->Cookie, NPersQueue::NErrorCode::SOURCEID_DELETED,
+            return ReplyError(ctx, ev.Cookie, NPersQueue::NErrorCode::SOURCEID_DELETED,
                 "SourceId doesn't exist");
         }
     }
 
-    for (auto& body : ev->Get()->Registrations) {
+    for (auto& body : ev.Registrations) {
         auto it = SourceIdStorage.GetInMemorySourceIds().find(body.SourceId);
         if (it == SourceIdStorage.GetInMemorySourceIds().end()) {
             msg.Registrations.push_back(std::move(body));
         } else {
             if (!it->second.Explicit) {
-                return ReplyError(ctx, ev->Get()->Cookie, NPersQueue::NErrorCode::BAD_REQUEST,
+                return ReplyError(ctx, ev.Cookie, NPersQueue::NErrorCode::BAD_REQUEST,
                     "Trying to register implicitly registered SourceId");
             }
         }
@@ -971,6 +1045,41 @@ void TPartition::HandleOnWrite(TEvPQ::TEvSplitMessageGroup::TPtr& ev, const TAct
 
     EmplaceRequest(std::move(msg), ctx);
 }
+
+//void TPartition::HandleOnWrite(TEvPQ::TEvSplitMessageGroup::TPtr& ev, const TActorContext& ctx) {
+//    PQ_LOG_T("TPartition::HandleOnWrite TEvSplitMessageGroup.");
+//
+//    if (ev->Get()->Deregistrations.size() > 1) {
+//        return ReplyError(ctx, ev->Get()->Cookie, NPersQueue::NErrorCode::BAD_REQUEST,
+//            TStringBuilder() << "Currently, single deregistrations are supported");
+//    }
+//
+//    TSplitMessageGroupMsg msg(ev->Get()->Cookie);
+//
+//    for (auto& body : ev->Get()->Deregistrations) {
+//        auto it = SourceIdStorage.GetInMemorySourceIds().find(body.SourceId);
+//        if (it != SourceIdStorage.GetInMemorySourceIds().end()) {
+//            msg.Deregistrations.push_back(std::move(body));
+//        } else {
+//            return ReplyError(ctx, ev->Get()->Cookie, NPersQueue::NErrorCode::SOURCEID_DELETED,
+//                "SourceId doesn't exist");
+//        }
+//    }
+//
+//    for (auto& body : ev->Get()->Registrations) {
+//        auto it = SourceIdStorage.GetInMemorySourceIds().find(body.SourceId);
+//        if (it == SourceIdStorage.GetInMemorySourceIds().end()) {
+//            msg.Registrations.push_back(std::move(body));
+//        } else {
+//            if (!it->second.Explicit) {
+//                return ReplyError(ctx, ev->Get()->Cookie, NPersQueue::NErrorCode::BAD_REQUEST,
+//                    "Trying to register implicitly registered SourceId");
+//            }
+//        }
+//    }
+//
+//    EmplaceRequest(std::move(msg), ctx);
+//}
 
 std::pair<TKey, ui32> TPartition::Compact(const TKey& key, const ui32 size, bool headCleared) {
     std::pair<TKey, ui32> res({key, size});
@@ -996,6 +1105,7 @@ std::pair<TKey, ui32> TPartition::Compact(const TKey& key, const ui32 size, bool
 
 void TPartition::ProcessChangeOwnerRequests(const TActorContext& ctx) {
     DBGTRACE("TPartition::ProcessChangeOwnerRequests");
+    DBGTRACE_LOG("WaitToChangeOwner.empty=" << WaitToChangeOwner.empty());
     PQ_LOG_T("TPartition::ProcessChangeOwnerRequests.");
 
     while (!WaitToChangeOwner.empty()) {
@@ -1013,6 +1123,7 @@ void TPartition::ProcessChangeOwnerRequests(const TActorContext& ctx) {
 }
 
 void TPartition::CancelAllWritesOnWrite(const TActorContext& ctx, TEvKeyValue::TEvRequest* request, const TString& errorStr, const TWriteMsg& p, TPartitionSourceManager::TModificationBatch& sourceIdBatch, NPersQueue::NErrorCode::EErrorCode errorCode) {
+    DBGTRACE("TPartition::CancelAllWritesOnWrite");
     PQ_LOG_T("TPartition::CancelAllWritesOnWrite.");
 
     ReplyError(ctx, p.Cookie, errorCode, errorStr);
@@ -1068,6 +1179,7 @@ TPartition::ProcessResult TPartition::ProcessRequest(TSplitMessageGroupMsg& msg,
 }
 
 TPartition::ProcessResult TPartition::ProcessRequest(TWriteMsg& p, ProcessParameters& parameters, TEvKeyValue::TEvRequest* request, const TActorContext& ctx) {
+    DBGTRACE("TPartition::ProcessRequest(TWriteMsg)");
         ui64& curOffset = parameters.CurOffset;
         auto& sourceIdBatch = parameters.SourceIdBatch;
         auto sourceId = sourceIdBatch.GetSource(p.Msg.SourceId);
@@ -1349,6 +1461,7 @@ TPartition::ProcessResult TPartition::ProcessRequest(TWriteMsg& p, ProcessParame
 bool TPartition::AppendHeadWithNewWrites(TEvKeyValue::TEvRequest* request, const TActorContext& ctx,
                                          TPartitionSourceManager::TModificationBatch& sourceIdBatch)
 {
+    DBGTRACE("TPartition::AppendHeadWithNewWrites");
     PQ_LOG_T("TPartition::AppendHeadWithNewWrites.");
 
     ProcessParameters parameters(sourceIdBatch);
@@ -1608,13 +1721,16 @@ bool TPartition::ProcessWrites(TEvKeyValue::TEvRequest* request, TInstant, const
 
     if (WaitingForPreviousBlobQuota() || WaitingForSubDomainQuota(ctx)) { // Waiting for topic quota.
         SetDeadlinesForWrites(ctx);
+        DBGTRACE_LOG("return");
         return false;
     }
     Y_ABORT_UNLESS(!PendingWriteRequest);
     QuotaDeadline = TInstant::Zero();
 
-    if (Requests.empty())
+    if (Requests.empty()) {
+        DBGTRACE_LOG("return");
         return false;
+    }
 
     Y_ABORT_UNLESS(request->Record.CmdWriteSize() == 0);
     Y_ABORT_UNLESS(request->Record.CmdRenameSize() == 0);
@@ -1632,11 +1748,13 @@ bool TPartition::ProcessWrites(TEvKeyValue::TEvRequest* request, TInstant, const
 
     if (NewHead.PackedSize == 0) { //nothing added to head - just compaction or tmp part blobs writed
         if (!sourceIdBatch.HasModifications()) {
+            DBGTRACE_LOG("return");
             return request->Record.CmdWriteSize() > 0
                 || request->Record.CmdRenameSize() > 0
                 || request->Record.CmdDeleteRangeSize() > 0;
         } else {
             sourceIdBatch.FillRequest(request);
+            DBGTRACE_LOG("return");
             return true;
         }
     }
@@ -1655,6 +1773,7 @@ bool TPartition::ProcessWrites(TEvKeyValue::TEvRequest* request, TInstant, const
                 << " size " << res.second << " WTime " << ctx.Now().MilliSeconds()
     );
     AddNewWriteBlob(res, request, headCleared, ctx);
+    DBGTRACE_LOG("return");
     return true;
 }
 
@@ -1686,7 +1805,7 @@ void TPartition::FilterDeadlinedWrites(const TActorContext& ctx) {
 }
 
 void TPartition::HandleWrites(TEvKeyValue::TEvRequest& request, const TActorContext& ctx) {
-    DBGTRACE("TPartition::HandleWrites");
+    DBGTRACE("TPartition::HandleWrites (1)");
     if (!CanWrite()) {
         if (CanEnqueue()) {
             return;
@@ -1705,11 +1824,12 @@ void TPartition::HandleWrites(TEvKeyValue::TEvRequest& request, const TActorCont
         }
     }
     if (PendingWriteRequest) {
+        DBGTRACE_LOG("has PendingWriteRequest");
         return;
     }
 
     PQ_LOG_T("TPartition::HandleWrites. Requests.size()=" << Requests.size());
-    Become(&TThis::StateWrite);
+    //BecomeWrite(ctx);
 
     Y_ABORT_UNLESS(Head.PackedSize + NewHead.PackedSize <= 2 * MaxSizeCheck);
 
@@ -1734,6 +1854,9 @@ void TPartition::HandleWrites(TEvKeyValue::TEvRequest& request, const TActorCont
             bool res = ProcessWrites(&request, now, ctx);
             Y_ABORT_UNLESS(!res);
         }
+        DBGTRACE_LOG("Requests.empty=" << Requests.empty());
+        DBGTRACE_LOG("WaitingForPreviousBlobQuota=" << WaitingForPreviousBlobQuota());
+        DBGTRACE_LOG("WaitingForSubDomainQuota=" << WaitingForSubDomainQuota(ctx));
         Y_ABORT_UNLESS(Requests.empty()
                     || WaitingForPreviousBlobQuota()
                     || WaitingForSubDomainQuota(ctx)); //in this case all writes must be processed or no quota left
@@ -1746,68 +1869,74 @@ void TPartition::HandleWrites(TEvKeyValue::TEvRequest& request, const TActorCont
 }
 
 void TPartition::HandleWrites(const TActorContext& ctx) {
-    DBGTRACE("TPartition::HandleWrites");
-    if (!CanWrite()) {
-        if (CanEnqueue()) {
-            return;
-        } else {
-            for(const auto& r : ReserveRequests) {
-                ReplyError(ctx, r->Cookie, InactivePartitionErrorCode,
-                    TStringBuilder() << "Write to inactive partition");
-            }
-            ReserveRequests.clear();
-            for(const auto& r : Requests) {
-                ReplyError(ctx, r.GetCookie(), InactivePartitionErrorCode,
-                    TStringBuilder() << "Write to inactive partition");
-            }
-            Requests.clear();
-            return;
-        }
-    }
-    if (PendingWriteRequest) {
-        return;
-    }
-
-    PQ_LOG_T("TPartition::HandleWrites. Requests.size()=" << Requests.size());
-    Become(&TThis::StateWrite);
-
+    DBGTRACE("TPartition::HandleWrites (2)");
     THolder<TEvKeyValue::TEvRequest> request(new TEvKeyValue::TEvRequest);
-
-    Y_ABORT_UNLESS(Head.PackedSize + NewHead.PackedSize <= 2 * MaxSizeCheck);
-
-    TInstant now = ctx.Now();
-    WriteCycleStartTime = now;
-
-    bool haveData = false;
-    bool haveCheckDisk = false;
-
-    if (!Requests.empty() && DiskIsFull) {
-        CancelAllWritesOnIdle(ctx);
-        AddCheckDiskRequest(request.Get(), NumChannels);
-        haveCheckDisk = true;
-    } else {
-        haveData = ProcessWrites(request.Get(), now, ctx);
-    }
-    bool haveDrop = CleanUp(request.Get(), ctx);
-
-    ProcessReserveRequests(ctx);
-    if (!haveData && !haveDrop && !haveCheckDisk) { //no data writed/deleted
-        if (!Requests.empty()) { //there could be change ownership requests that
-            bool res = ProcessWrites(request.Get(), now, ctx);
-            Y_ABORT_UNLESS(!res);
-        }
-        Y_ABORT_UNLESS(Requests.empty()
-                    || WaitingForPreviousBlobQuota()
-                    || WaitingForSubDomainQuota(ctx)); //in this case all writes must be processed or no quota left
-        AnswerCurrentWrites(ctx); //in case if all writes are already done - no answer will be called on kv write, no kv write at all
-        BecomeIdle(ctx);
-        return;
-    }
-
-    WritesTotal.Inc();
+    HandleWrites(*request, ctx);
     Y_ABORT_UNLESS(!PendingWriteRequest);
     PendingWriteRequest = std::move(request);
     RequestBlobQuota();
+//    if (!CanWrite()) {
+//        if (CanEnqueue()) {
+//            return;
+//        } else {
+//            for(const auto& r : ReserveRequests) {
+//                ReplyError(ctx, r->Cookie, InactivePartitionErrorCode,
+//                    TStringBuilder() << "Write to inactive partition");
+//            }
+//            ReserveRequests.clear();
+//            for(const auto& r : Requests) {
+//                ReplyError(ctx, r.GetCookie(), InactivePartitionErrorCode,
+//                    TStringBuilder() << "Write to inactive partition");
+//            }
+//            Requests.clear();
+//            return;
+//        }
+//    }
+//    if (PendingWriteRequest) {
+//        DBGTRACE_LOG("has PendingWriteRequest");
+//        return;
+//    }
+//
+//    PQ_LOG_T("TPartition::HandleWrites. Requests.size()=" << Requests.size());
+//    BecomeWrite(ctx);
+//
+//    THolder<TEvKeyValue::TEvRequest> request(new TEvKeyValue::TEvRequest);
+//
+//    Y_ABORT_UNLESS(Head.PackedSize + NewHead.PackedSize <= 2 * MaxSizeCheck);
+//
+//    TInstant now = ctx.Now();
+//    WriteCycleStartTime = now;
+//
+//    bool haveData = false;
+//    bool haveCheckDisk = false;
+//
+//    if (!Requests.empty() && DiskIsFull) {
+//        CancelAllWritesOnIdle(ctx);
+//        AddCheckDiskRequest(request.Get(), NumChannels);
+//        haveCheckDisk = true;
+//    } else {
+//        haveData = ProcessWrites(request.Get(), now, ctx);
+//    }
+//    bool haveDrop = CleanUp(request.Get(), ctx);
+//
+//    ProcessReserveRequests(ctx);
+//    if (!haveData && !haveDrop && !haveCheckDisk) { //no data writed/deleted
+//        if (!Requests.empty()) { //there could be change ownership requests that
+//            bool res = ProcessWrites(request.Get(), now, ctx);
+//            Y_ABORT_UNLESS(!res);
+//        }
+//        Y_ABORT_UNLESS(Requests.empty()
+//                    || WaitingForPreviousBlobQuota()
+//                    || WaitingForSubDomainQuota(ctx)); //in this case all writes must be processed or no quota left
+//        AnswerCurrentWrites(ctx); //in case if all writes are already done - no answer will be called on kv write, no kv write at all
+//        BecomeIdle(ctx);
+//        return;
+//    }
+//
+//    WritesTotal.Inc();
+//    Y_ABORT_UNLESS(!PendingWriteRequest);
+//    PendingWriteRequest = std::move(request);
+//    RequestBlobQuota();
 }
 
 void TPartition::RequestQuotaForWriteBlobRequest(size_t dataSize, ui64 cookie) {
@@ -1859,7 +1988,7 @@ void TPartition::RequestBlobQuota() {
 
 void TPartition::WritePendingBlob() {
     DBGTRACE("TPartition::WritePendingBlob");
-    Y_ABORT_UNLESS(CurrentStateFunc() == &TThis::StateWrite);
+    //Y_ABORT_UNLESS(CurrentStateFunc() == &TThis::StateWrite);
     Y_ABORT_UNLESS(PendingWriteRequest);
 
     AddMetaKey(PendingWriteRequest.Get());

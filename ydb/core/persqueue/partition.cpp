@@ -299,6 +299,7 @@ ui64 TPartition::ImportantClientsMinOffset() const {
 }
 
 void TPartition::HandleWakeup(const TActorContext& ctx) {
+    DBGTRACE("TPartition::HandleWakeup");
     FilterDeadlinedWrites(ctx);
 
     ctx.Schedule(WAKE_TIMEOUT, new TEvents::TEvWakeup());
@@ -352,7 +353,7 @@ void TPartition::HandleWakeup(const TActorContext& ctx) {
         TopicQuotaWaitTimeForCurrentBlob = TDuration::Zero();
         PartitionQuotaWaitTimeForCurrentBlob = TDuration::Zero();
         WritesTotal.Inc();
-        Become(&TThis::StateWrite);
+        //BecomeWrite(ctx);
         AddMetaKey(request.Get());
         ctx.Send(Tablet, request.Release());
     }
@@ -516,6 +517,7 @@ bool CheckDiskStatus(const TStorageStatusFlags status) {
 }
 
 void TPartition::InitComplete(const TActorContext& ctx) {
+    DBGTRACE("TPartition::InitComplete");
     if (StartOffset == EndOffset && EndOffset == 0) {
         for (auto& [user, info] : UsersInfoStorage->GetAll()) {
             if (info.Offset > 0 && StartOffset < (ui64)info.Offset) {
@@ -545,7 +547,7 @@ void TPartition::InitComplete(const TActorContext& ctx) {
 
     CheckHeadConsistency();
 
-    Become(&TThis::StateIdle);
+    BecomeIdle(ctx);
     InitDuration = ctx.Now() - CreationTime;
     InitDone = true;
     TabletCounters.Percentile()[COUNTER_LATENCY_PQ_INIT].IncrementFor(InitDuration.MilliSeconds());
@@ -607,6 +609,7 @@ void TPartition::Handle(TEvPQ::TEvChangePartitionConfig::TPtr& ev, const TActorC
 
 
 void TPartition::Handle(TEvPQ::TEvPipeDisconnected::TPtr& ev, const TActorContext& ctx) {
+    DBGTRACE("TPartition::Handle(TEvPQ::TEvPipeDisconnected)");
     const TString& owner = ev->Get()->Owner;
     const TActorId& pipeClient = ev->Get()->PipeClient;
 
@@ -1550,6 +1553,7 @@ void TPartition::ContinueProcessTxsAndUserActs(const TActorContext& ctx)
 
         size_t index = UserActionAndTransactionEvents.front().index();
         while (!UserActionAndTransactionEvents.empty()) {
+            DBGTRACE_LOG("UserActionAndTransactionEvents.size=" << UserActionAndTransactionEvents.size());
             auto& front = UserActionAndTransactionEvents.front();
 
             if (index != front.index()) {
@@ -1600,6 +1604,86 @@ void TPartition::RemoveDistrTx()
 
     UserActionAndTransactionEvents.pop_front();
     PendingPartitionConfig = nullptr;
+}
+
+template<class T>
+bool TPartition::ProcessUserActionOrTransactionT(T& event, const TActorContext& ctx)
+{
+    Y_ABORT_UNLESS(CurrentStateFunc() == &TThis::StateIdle);
+    HandleOnWrite(event, ctx);
+    WriteInProgress = true;
+    UserActionAndTransactionEvents.pop_front();
+    return true;
+}
+
+bool TPartition::ProcessUserActionOrTransaction(const TEvPQ::TEvUpdateAvailableSize& event,
+                                                const TActorContext& ctx)
+{
+    DBGTRACE("TPartition::ProcessUserActionOrTransaction(TEvPQ::TEvUpdateAvailableSize)");
+    return ProcessUserActionOrTransactionT(event, ctx);
+}
+
+bool TPartition::ProcessUserActionOrTransaction(TEvPQ::TEvRegisterMessageGroup& event,
+                                                const TActorContext& ctx)
+{
+    DBGTRACE("TPartition::ProcessUserActionOrTransaction(TEvPQ::TEvRegisterMessageGroup)");
+    return ProcessUserActionOrTransactionT(event, ctx);
+}
+
+bool TPartition::ProcessUserActionOrTransaction(TEvPQ::TEvDeregisterMessageGroup& event,
+                                                const TActorContext& ctx)
+{
+    DBGTRACE("TPartition::ProcessUserActionOrTransaction(TEvPQ::TEvDeregisterMessageGroup)");
+    return ProcessUserActionOrTransactionT(event, ctx);
+}
+
+bool TPartition::ProcessUserActionOrTransaction(const TEvPQ::TEvSplitMessageGroup& event,
+                                                const TActorContext& ctx)
+{
+    DBGTRACE("TPartition::ProcessUserActionOrTransaction(TEvPQ::TEvSplitMessageGroup)");
+    return ProcessUserActionOrTransactionT(event, ctx);
+}
+
+bool TPartition::ProcessUserActionOrTransaction(const TEvPQ::TEvReserveBytes& event,
+                                                const TActorContext& ctx)
+{
+    DBGTRACE("TPartition::ProcessUserActionOrTransaction(TEvPQ::TEvReserveBytes)");
+    DBGTRACE_LOG("Cookie=" << event.Cookie);
+    DBGTRACE_LOG("OwnerCookie=" << event.OwnerCookie);
+    DBGTRACE_LOG("MessageNo=" << event.MessageNo);
+
+    const TString& ownerCookie = event.OwnerCookie;
+    TStringBuf owner = TOwnerInfo::GetOwnerFromOwnerCookie(ownerCookie);
+    const ui64& messageNo = event.MessageNo;
+
+    auto it = Owners.find(owner);
+    if (it == Owners.end() || it->second.OwnerCookie != ownerCookie) {
+        DBGTRACE_LOG("IsEnd=" << (it == Owners.end()));
+        ReplyError(ctx, event.Cookie, NPersQueue::NErrorCode::BAD_REQUEST, "ReserveRequest from dead ownership session");
+        UserActionAndTransactionEvents.pop_front();
+        return true;
+    }
+
+    if (messageNo != it->second.NextMessageNo) {
+        ReplyError(ctx, event.Cookie, NPersQueue::NErrorCode::BAD_REQUEST,
+            TStringBuilder() << "reorder in reserve requests, waiting " << it->second.NextMessageNo << ", but got " << messageNo);
+        DropOwner(it, ctx);
+        ProcessChangeOwnerRequests(ctx);
+        UserActionAndTransactionEvents.pop_front();
+        return true;
+    }
+
+    ++it->second.NextMessageNo;
+    DBGTRACE_LOG("NextMessageNo=" << it->second.NextMessageNo);
+    ReserveRequests.emplace_back(new TEvPQ::TEvReserveBytes(event.Cookie,
+                                                            event.Size,
+                                                            event.OwnerCookie,
+                                                            event.MessageNo,
+                                                            event.LastRequest));
+    ProcessReserveRequests(ctx);
+    UserActionAndTransactionEvents.pop_front();
+
+    return true;
 }
 
 bool TPartition::ProcessUserActionOrTransaction(const TEvPQ::TEvWrite& event,
@@ -2552,7 +2636,13 @@ void TPartition::ScheduleUpdateAvailableSize(const TActorContext& ctx) {
 }
 
 void TPartition::BecomeIdle(const TActorContext&) {
+    DBGTRACE("TPartition::BecomeIdle");
     Become(&TThis::StateIdle);
+}
+
+void TPartition::BecomeWrite(const TActorContext&) {
+    DBGTRACE("TPartition::BecomeWrite");
+    Become(&TThis::StateWrite);
 }
 
 void TPartition::ClearOldHead(const ui64 offset, const ui16 partNo, TEvKeyValue::TEvRequest* request) {

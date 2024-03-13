@@ -155,18 +155,22 @@ private:
     void Handle(TEvents::TEvPoisonPill::TPtr& ev, const TActorContext& ctx);
     void Handle(TEvPQ::TEvSubDomainStatus::TPtr& ev, const TActorContext& ctx);
     void HandleMonitoring(TEvPQ::TEvMonRequest::TPtr& ev, const TActorContext& ctx);
-    void HandleOnIdle(TEvPQ::TEvDeregisterMessageGroup::TPtr& ev, const TActorContext& ctx);
-    void HandleOnIdle(TEvPQ::TEvRegisterMessageGroup::TPtr& ev, const TActorContext& ctx);
-    void HandleOnIdle(TEvPQ::TEvSplitMessageGroup::TPtr& ev, const TActorContext& ctx);
-    void HandleOnIdle(TEvPQ::TEvUpdateAvailableSize::TPtr& ev, const TActorContext& ctx);
+    //void HandleOnIdle(TEvPQ::TEvDeregisterMessageGroup::TPtr& ev, const TActorContext& ctx);
+    //void HandleOnIdle(TEvPQ::TEvRegisterMessageGroup::TPtr& ev, const TActorContext& ctx);
+    //void HandleOnIdle(TEvPQ::TEvSplitMessageGroup::TPtr& ev, const TActorContext& ctx);
+    //void HandleOnIdle(TEvPQ::TEvUpdateAvailableSize::TPtr& ev, const TActorContext& ctx);
     //void HandleOnIdle(TEvPQ::TEvWrite::TPtr& ev, const TActorContext& ctx);
     void HandleOnInit(TEvPQ::TEvPartitionOffsets::TPtr& ev, const TActorContext& ctx);
     void HandleOnInit(TEvPQ::TEvPartitionStatus::TPtr& ev, const TActorContext& ctx);
-    void HandleOnWrite(TEvPQ::TEvDeregisterMessageGroup::TPtr& ev, const TActorContext& ctx);
-    void HandleOnWrite(TEvPQ::TEvRegisterMessageGroup::TPtr& ev, const TActorContext& ctx);
-    void HandleOnWrite(TEvPQ::TEvSplitMessageGroup::TPtr& ev, const TActorContext& ctx);
-    void HandleOnWrite(TEvPQ::TEvUpdateAvailableSize::TPtr& ev, const TActorContext& ctx);
+    //void HandleOnWrite(TEvPQ::TEvDeregisterMessageGroup::TPtr& ev, const TActorContext& ctx);
+    //void HandleOnWrite(TEvPQ::TEvRegisterMessageGroup::TPtr& ev, const TActorContext& ctx);
+    //void HandleOnWrite(TEvPQ::TEvSplitMessageGroup::TPtr& ev, const TActorContext& ctx);
+    //void HandleOnWrite(TEvPQ::TEvUpdateAvailableSize::TPtr& ev, const TActorContext& ctx);
     //void HandleOnWrite(TEvPQ::TEvWrite::TPtr& ev, const TActorContext& ctx);
+    void Handle(TEvPQ::TEvDeregisterMessageGroup::TPtr& ev, const TActorContext& ctx);
+    void Handle(TEvPQ::TEvRegisterMessageGroup::TPtr& ev, const TActorContext& ctx);
+    void Handle(TEvPQ::TEvSplitMessageGroup::TPtr& ev, const TActorContext& ctx);
+    void Handle(TEvPQ::TEvUpdateAvailableSize::TPtr& ev, const TActorContext& ctx);
     void Handle(TEvPQ::TEvWrite::TPtr& ev, const TActorContext& ctx);
     void HandleWakeup(const TActorContext& ctx);
     void HandleWriteResponse(const TActorContext& ctx);
@@ -203,6 +207,7 @@ private:
 
     void AddMetaKey(TEvKeyValue::TEvRequest* request);
     void BecomeIdle(const TActorContext& ctx);
+    void BecomeWrite(const TActorContext& ctx);
     void CheckHeadConsistency() const;
     void HandleWrites(TEvKeyValue::TEvRequest& request, const TActorContext& ctx);
     void HandleWrites(const TActorContext& ctx);
@@ -455,6 +460,7 @@ private:
         switch (ev->GetTypeRewrite()) {
             CFunc(TEvents::TSystem::Wakeup, HandleWakeup);
             HFuncTraced(TEvKeyValue::TEvResponse, Handle);
+            HFuncTraced(TEvPQ::TEvHandleWriteResponse, Handle);
             HFuncTraced(TEvPQ::TEvBlobResponse, Handle);
             //HFuncTraced(TEvPQ::TEvWrite, HandleOnIdle);
             HFuncTraced(TEvPQ::TEvWrite, Handle);
@@ -477,14 +483,14 @@ private:
             HFuncTraced(TEvPQ::TEvProxyResponse, Handle);
             HFuncTraced(TEvPQ::TEvError, Handle);
             HFuncTraced(TEvPQ::TEvGetPartitionClientInfo, Handle);
-            HFuncTraced(TEvPQ::TEvUpdateAvailableSize, HandleOnIdle);
+            HFuncTraced(TEvPQ::TEvUpdateAvailableSize, Handle);
             HFuncTraced(TEvPQ::TEvReserveBytes, Handle);
             HFuncTraced(TEvPQ::TEvPipeDisconnected, Handle);
             HFuncTraced(TEvPQ::TEvApproveWriteQuota, Handle);
             HFuncTraced(TEvPQ::TEvQuotaDeadlineCheck, Handle);
-            HFuncTraced(TEvPQ::TEvRegisterMessageGroup, HandleOnIdle);
-            HFuncTraced(TEvPQ::TEvDeregisterMessageGroup, HandleOnIdle);
-            HFuncTraced(TEvPQ::TEvSplitMessageGroup, HandleOnIdle);
+            HFuncTraced(TEvPQ::TEvRegisterMessageGroup, Handle);
+            HFuncTraced(TEvPQ::TEvDeregisterMessageGroup, Handle);
+            HFuncTraced(TEvPQ::TEvSplitMessageGroup, Handle);
             HFuncTraced(TEvPersQueue::TEvProposeTransaction, Handle);
             HFuncTraced(TEvPQ::TEvTxCalcPredicate, Handle);
             HFuncTraced(TEvPQ::TEvGetWriteInfoRequest, Handle);
@@ -537,12 +543,12 @@ private:
             HFuncTraced(TEvPQ::TEvReserveBytes, Handle);
             HFuncTraced(TEvPQ::TEvGetPartitionClientInfo, Handle);
             HFuncTraced(TEvPQ::TEvPipeDisconnected, Handle);
-            HFuncTraced(TEvPQ::TEvUpdateAvailableSize, HandleOnWrite);
+            HFuncTraced(TEvPQ::TEvUpdateAvailableSize, Handle);
             HFuncTraced(TEvPQ::TEvQuotaDeadlineCheck, Handle);
             HFuncTraced(TEvPQ::TEvApproveWriteQuota, Handle);
-            HFuncTraced(TEvPQ::TEvRegisterMessageGroup, HandleOnWrite);
-            HFuncTraced(TEvPQ::TEvDeregisterMessageGroup, HandleOnWrite);
-            HFuncTraced(TEvPQ::TEvSplitMessageGroup, HandleOnWrite);
+            HFuncTraced(TEvPQ::TEvRegisterMessageGroup, Handle);
+            HFuncTraced(TEvPQ::TEvDeregisterMessageGroup, Handle);
+            HFuncTraced(TEvPQ::TEvSplitMessageGroup, Handle);
             HFuncTraced(TEvPersQueue::TEvProposeTransaction, Handle);
             HFuncTraced(TEvPQ::TEvTxCalcPredicate, Handle);
             HFuncTraced(TEvPQ::TEvGetWriteInfoRequest, Handle);
@@ -652,7 +658,15 @@ private:
     bool ProcessUserActionOrTransaction(TEvPQ::TEvSetClientInfo& event, const TActorContext& ctx);
     bool ProcessUserActionOrTransaction(const TEvPersQueue::TEvProposeTransaction& event, const TActorContext& ctx);
     bool ProcessUserActionOrTransaction(TTransaction& tx, const TActorContext& ctx);
+    bool ProcessUserActionOrTransaction(const TEvPQ::TEvReserveBytes& event, const TActorContext& ctx);
     bool ProcessUserActionOrTransaction(const TEvPQ::TEvWrite& event, const TActorContext& ctx);
+    bool ProcessUserActionOrTransaction(const TEvPQ::TEvUpdateAvailableSize& event, const TActorContext& ctx);
+    bool ProcessUserActionOrTransaction(TEvPQ::TEvRegisterMessageGroup& event, const TActorContext& ctx);
+    bool ProcessUserActionOrTransaction(TEvPQ::TEvDeregisterMessageGroup& event, const TActorContext& ctx);
+    bool ProcessUserActionOrTransaction(const TEvPQ::TEvSplitMessageGroup& event, const TActorContext& ctx);
+
+    template<class T>
+    bool ProcessUserActionOrTransactionT(T& event, const TActorContext& ctx);
 
     //
     // user actions and transactions
@@ -661,7 +675,12 @@ private:
         std::variant<TSimpleSharedPtr<TEvPQ::TEvSetClientInfo>,             // user actions
                      TSimpleSharedPtr<TEvPersQueue::TEvProposeTransaction>, // immediate transaction
                      TSimpleSharedPtr<TTransaction>,                        // distributed transaction or update config
-                     TSimpleSharedPtr<TEvPQ::TEvWrite>>;
+                     TSimpleSharedPtr<TEvPQ::TEvReserveBytes>,
+                     TSimpleSharedPtr<TEvPQ::TEvWrite>,
+                     TSimpleSharedPtr<TEvPQ::TEvUpdateAvailableSize>,
+                     TSimpleSharedPtr<TEvPQ::TEvRegisterMessageGroup>,
+                     TSimpleSharedPtr<TEvPQ::TEvDeregisterMessageGroup>,
+                     TSimpleSharedPtr<TEvPQ::TEvSplitMessageGroup>>;
     std::deque<TUserActionAndTransactionEvent> UserActionAndTransactionEvents;
     size_t ImmediateTxCount = 0;
     THashMap<TString, size_t> UserActCount;
@@ -791,6 +810,13 @@ private:
 
     //void HandleOnIdle(const TEvPQ::TEvWrite& ev, const TActorContext& ctx);
     void HandleOnWrite(const TEvPQ::TEvWrite& ev, const TActorContext& ctx);
+    void HandleOnWrite(const TEvPQ::TEvUpdateAvailableSize& event, const TActorContext& ctx);
+    void HandleOnWrite(TEvPQ::TEvRegisterMessageGroup& event, const TActorContext& ctx);
+    void HandleOnWrite(TEvPQ::TEvDeregisterMessageGroup& event, const TActorContext& ctx);
+    void HandleOnWrite(const TEvPQ::TEvSplitMessageGroup& event, const TActorContext& ctx);
+
+    template <class T>
+    void EnqueueEvent(TAutoPtr<TEventHandle<T>>& ev, const TActorContext& ctx);
 };
 
 } // namespace NKikimr::NPQ

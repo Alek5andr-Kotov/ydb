@@ -2230,6 +2230,8 @@ void TPersQueue::HandleReserveBytesRequest(const ui64 responseCookie, const TAct
     }
 
     InitResponseBuilder(responseCookie, 1, COUNTER_LATENCY_PQ_RESERVE_BYTES);
+    DBGTRACE_LOG("Cookie=" << responseCookie <<
+                 ", MessageNo=" << req.GetMessageNo());
     THolder<TEvPQ::TEvReserveBytes> event = MakeHolder<TEvPQ::TEvReserveBytes>(responseCookie, req.GetCmdReserveBytes().GetSize(),
                                                                         req.GetOwnerCookie(), req.GetMessageNo(), req.GetCmdReserveBytes().GetLastRequest());
     ctx.Send(partActor, event.Release());

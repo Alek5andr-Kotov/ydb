@@ -732,6 +732,8 @@ void TWriteSessionActor<UseMigrationProtocol>::DestroyPartitionWriterCache(const
 
 template<bool UseMigrationProtocol>
 void TWriteSessionActor<UseMigrationProtocol>::CloseSession(const TString& errorReason, const PersQueue::ErrorCode::ErrorCode errorCode, const NActors::TActorContext& ctx) {
+    DBGTRACE("TWriteSessionActor::CloseSession");
+    DBGTRACE_LOG("errorReason=" << errorReason);
     if (SessionClosed) {
         return;
     }

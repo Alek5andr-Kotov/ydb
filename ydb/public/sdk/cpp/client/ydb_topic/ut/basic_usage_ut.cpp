@@ -652,12 +652,15 @@ Y_UNIT_TEST_SUITE(BasicUsage) {
 
         Cerr << ">>> TEST: Create session" << Endl;
 
+        DBGTRACE_LOG("create read session");
         ReadSession = topicClient.CreateReadSession(readSettings);
 
         Sleep(TDuration::MilliSeconds(50));
 
+        DBGTRACE_LOG("close read session");
         ReadSession->Close();
         ReadSession = nullptr;
+        DBGTRACE_LOG("read session closed");
         Cerr << ">>> TEST: Session gracefully closed" << Endl;
 
         Sleep(TDuration::Seconds(5));
