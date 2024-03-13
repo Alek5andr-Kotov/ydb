@@ -4347,6 +4347,7 @@ void TPersQueue::TryStartTransaction(const TActorContext& ctx)
 
 void TPersQueue::OnInitComplete(const TActorContext& ctx)
 {
+    DBGTRACE("TPersQueue::OnInitComplete");
     SignalTabletActive(ctx);
     TryStartTransaction(ctx);
     InitCompleted = true;

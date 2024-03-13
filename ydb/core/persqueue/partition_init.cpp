@@ -519,7 +519,7 @@ void TInitDataRangeStep::FillBlobsMetaData(const NKikimrClient::TKeyValueRespons
                         dataKeysBody.empty() ? 0 : dataKeysBody.back().CumulativeSize + dataKeysBody.back().Size});
     }
 
-    DBGTRACE("startOffset=" << startOffset << ", endOffset=" << endOffset);
+    DBGTRACE_LOG("startOffset=" << startOffset << ", endOffset=" << endOffset);
     Y_ABORT_UNLESS(endOffset >= startOffset);
 }
 

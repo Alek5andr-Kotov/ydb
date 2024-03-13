@@ -233,6 +233,7 @@ TPartition::TPartition(ui64 tabletId, const TPartitionId& partition, const TActo
         for (auto& tx : distrTxs) {
             UserActionAndTransactionEvents.emplace_back(new TTransaction(std::move(tx)));
         }
+        DBGTRACE_LOG("UserActionAndTransactionEvents.size=" << UserActionAndTransactionEvents.size());
         TxInProgress = GetUserActionAndTransactionEventsFront<TTransaction>().Predicate.Defined();
     }
 }
@@ -1454,32 +1455,38 @@ void TPartition::Handle(TEvKeyValue::TEvResponse::TPtr& ev, const TActorContext&
         ProcessTxsAndUserActs(ctx);
     } else {
         ctx.Schedule(minWriteLatency - writeDuration, new TEvPQ::TEvHandleWriteResponse());
+        DBGTRACE_LOG("schedule TEvPQ::TEvHandleWriteResponse");
     }
 }
 
 void TPartition::PushBackDistrTx(TSimpleSharedPtr<TEvPQ::TEvTxCalcPredicate> event)
 {
     UserActionAndTransactionEvents.emplace_back(new TTransaction(std::move(event)));
+    DBGTRACE_LOG("UserActionAndTransactionEvents.size=" << UserActionAndTransactionEvents.size());
 }
 
 void TPartition::PushBackDistrTx(TSimpleSharedPtr<TEvPQ::TEvChangePartitionConfig> event)
 {
     UserActionAndTransactionEvents.emplace_back(new TTransaction(std::move(event), true));
+    DBGTRACE_LOG("UserActionAndTransactionEvents.size=" << UserActionAndTransactionEvents.size());
 }
 
 void TPartition::PushFrontDistrTx(TSimpleSharedPtr<TEvPQ::TEvChangePartitionConfig> event)
 {
     UserActionAndTransactionEvents.emplace_front(new TTransaction(std::move(event), false));
+    DBGTRACE_LOG("UserActionAndTransactionEvents.size=" << UserActionAndTransactionEvents.size());
 }
 
 void TPartition::PushBackDistrTx(TSimpleSharedPtr<TEvPQ::TEvProposePartitionConfig> event)
 {
     UserActionAndTransactionEvents.emplace_back(new TTransaction(std::move(event)));
+    DBGTRACE_LOG("UserActionAndTransactionEvents.size=" << UserActionAndTransactionEvents.size());
 }
 
 void TPartition::AddImmediateTx(TSimpleSharedPtr<TEvPersQueue::TEvProposeTransaction> tx)
 {
     UserActionAndTransactionEvents.emplace_back(std::move(tx));
+    DBGTRACE_LOG("UserActionAndTransactionEvents.size=" << UserActionAndTransactionEvents.size());
     ++ImmediateTxCount;
 }
 
@@ -1487,6 +1494,7 @@ void TPartition::AddUserAct(TSimpleSharedPtr<TEvPQ::TEvSetClientInfo> act)
 {
     TString clientId = act->ClientId;
     UserActionAndTransactionEvents.emplace_back(std::move(act));
+    DBGTRACE_LOG("UserActionAndTransactionEvents.size=" << UserActionAndTransactionEvents.size());
     ++UserActCount[clientId];
 }
 
@@ -1529,6 +1537,10 @@ void TPartition::ProcessTxsAndUserActs(const TActorContext& ctx)
 {
     DBGTRACE("TPartition::ProcessTxsAndUserActs");
     if (UsersInfoWriteInProgress || UserActionAndTransactionEvents.empty() || TxInProgress || WriteInProgress) {
+        DBGTRACE_LOG("UsersInfoWriteInProgress=" << UsersInfoWriteInProgress);
+        DBGTRACE_LOG("UserActionAndTransactionEvents.empty=" << UserActionAndTransactionEvents.empty());
+        DBGTRACE_LOG("TxInProgress=" << TxInProgress);
+        DBGTRACE_LOG("WriteInProgress=" << WriteInProgress);
         return;
     }
 
@@ -1557,19 +1569,23 @@ void TPartition::ContinueProcessTxsAndUserActs(const TActorContext& ctx)
             auto& front = UserActionAndTransactionEvents.front();
 
             if (index != front.index()) {
+                DBGTRACE_LOG("different event type");
                 break;
             }
 
             if (!std::visit(visitor, front)) {
+                DBGTRACE_LOG("processor returned false");
                 break;
             }
 
             if (TxInProgress) {
+                DBGTRACE_LOG("transaction has started");
                 break;
             }
         }
 
         if (TxInProgress) {
+            DBGTRACE_LOG("return");
             return;
         }
     }
@@ -1586,15 +1602,18 @@ void TPartition::ContinueProcessTxsAndUserActs(const TActorContext& ctx)
         HandleWrites(*request, ctx);
     }
 
+    DBGTRACE_LOG("WriteInProgress=" << WriteInProgress);
     if (WriteInProgress) {
         Y_ABORT_UNLESS(!PendingWriteRequest);
         PendingWriteRequest = std::move(request);
+        DBGTRACE_LOG("PendingWriteRequest is not null");
         RequestBlobQuota();
     } else {
         ctx.Send(Tablet, request.Release());
     }
 
     UsersInfoWriteInProgress = true;
+    DBGTRACE_LOG("UsersInfoWriteInProgress=" << UsersInfoWriteInProgress);
 }
 
 void TPartition::RemoveDistrTx()
@@ -1612,6 +1631,7 @@ bool TPartition::ProcessUserActionOrTransactionT(T& event, const TActorContext& 
     Y_ABORT_UNLESS(CurrentStateFunc() == &TThis::StateIdle);
     HandleOnWrite(event, ctx);
     WriteInProgress = true;
+    DBGTRACE_LOG("WriteInProgress=" << WriteInProgress);
     UserActionAndTransactionEvents.pop_front();
     return true;
 }
@@ -1642,6 +1662,23 @@ bool TPartition::ProcessUserActionOrTransaction(const TEvPQ::TEvSplitMessageGrou
 {
     DBGTRACE("TPartition::ProcessUserActionOrTransaction(TEvPQ::TEvSplitMessageGroup)");
     return ProcessUserActionOrTransactionT(event, ctx);
+}
+
+bool TPartition::ProcessUserActionOrTransaction(const TEvPQ::TEvChangeOwner& event,
+                                                const TActorContext& ctx)
+{
+    DBGTRACE("TPartition::ProcessUserActionOrTransaction(TEvPQ::TEvChangeOwner)");
+    bool res = OwnerPipes.insert(event.PipeClient).second;
+    Y_ABORT_UNLESS(res);
+    WaitToChangeOwner.emplace_back(new TEvPQ::TEvChangeOwner(event.Cookie,
+                                                             event.Owner,
+                                                             event.PipeClient,
+                                                             event.Sender,
+                                                             event.Force,
+                                                             event.RegisterIfNotExists));
+    ProcessChangeOwnerRequests(ctx);
+    UserActionAndTransactionEvents.pop_front();
+    return true;
 }
 
 bool TPartition::ProcessUserActionOrTransaction(const TEvPQ::TEvReserveBytes& event,
@@ -1693,6 +1730,7 @@ bool TPartition::ProcessUserActionOrTransaction(const TEvPQ::TEvWrite& event,
     Y_ABORT_UNLESS(CurrentStateFunc() == &TThis::StateIdle);
     HandleOnWrite(event, ctx);
     WriteInProgress = true;
+    DBGTRACE_LOG("WriteInProgress=" << WriteInProgress);
     UserActionAndTransactionEvents.pop_front();
     return true;
 }
@@ -1700,9 +1738,11 @@ bool TPartition::ProcessUserActionOrTransaction(const TEvPQ::TEvWrite& event,
 bool TPartition::ProcessUserActionOrTransaction(TTransaction& t,
                                                 const TActorContext& ctx)
 {
+    DBGTRACE("TPartition::ProcessUserActionOrTransaction(TTransaction)");
     Y_ABORT_UNLESS(!TxInProgress);
 
     if (t.Tx) {
+        DBGTRACE_LOG("data tx");
         t.Predicate = BeginTransaction(*t.Tx, ctx);
 
         ctx.Send(Tablet,
@@ -1713,6 +1753,7 @@ bool TPartition::ProcessUserActionOrTransaction(TTransaction& t,
 
         TxInProgress = true;
     } else if (t.ProposeConfig) {
+        DBGTRACE_LOG("config tx");
         t.Predicate = BeginTransaction(*t.ProposeConfig);
 
         PendingPartitionConfig = GetPartitionConfig(t.ProposeConfig->Config);
@@ -1725,6 +1766,7 @@ bool TPartition::ProcessUserActionOrTransaction(TTransaction& t,
 
         TxInProgress = true;
     } else {
+        DBGTRACE_LOG("change config");
         Y_ABORT_UNLESS(!ChangeConfig);
 
         ChangeConfig = t.ChangeConfig;
@@ -2003,6 +2045,7 @@ void TPartition::OnProcessTxsAndUserActsWriteComplete(ui64 cookie, const TActorC
     AffectedUsers.clear();
 
     UsersInfoWriteInProgress = false;
+    DBGTRACE_LOG("UsersInfoWriteInProgress=" << UsersInfoWriteInProgress);
 
     TxIdHasChanged = false;
 
@@ -2077,6 +2120,7 @@ void TPartition::ResendPendingEvents(const TActorContext& ctx)
 bool TPartition::ProcessUserActionOrTransaction(const TEvPersQueue::TEvProposeTransaction& event,
                                                 const TActorContext& ctx)
 {
+    DBGTRACE("TPartition::ProcessUserActionOrTransaction(TEvPersQueue::TEvProposeTransaction)");
     if (AffectedUsers.size() >= MAX_USERS) {
         return false;
     }
@@ -2139,6 +2183,7 @@ void TPartition::ProcessImmediateTx(const NKikimrPQ::TEvProposeTransaction& tx,
 bool TPartition::ProcessUserActionOrTransaction(TEvPQ::TEvSetClientInfo& act,
                                                 const TActorContext& ctx)
 {
+    DBGTRACE("TPartition::ProcessUserActionOrTransaction(TEvPQ::TEvSetClientInfo)");
     if (AffectedUsers.size() >= MAX_USERS) {
         return false;
     }
@@ -2751,6 +2796,7 @@ bool TPartition::IsQuotingEnabled() const
 
 void TPartition::Handle(TEvPQ::TEvSubDomainStatus::TPtr& ev, const TActorContext& ctx)
 {
+    DBGTRACE("TPartition::Handle(TEvPQ::TEvSubDomainStatus)");
     const TEvPQ::TEvSubDomainStatus& event = *ev->Get();
 
     bool statusChanged = SubDomainOutOfSpace != event.SubDomainOutOfSpace();

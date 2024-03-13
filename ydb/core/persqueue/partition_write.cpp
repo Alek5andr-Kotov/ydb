@@ -204,10 +204,10 @@ void TPartition::Handle(TEvPQ::TEvChangeOwner::TPtr& ev, const TActorContext& ct
     DBGTRACE_LOG("owner=" << ev->Get()->Owner);
     PQ_LOG_T("TPartition::HandleOnWrite TEvChangeOwner.");
 
-    bool res = OwnerPipes.insert(ev->Get()->PipeClient).second;
-    Y_ABORT_UNLESS(res);
-    WaitToChangeOwner.push_back(ev->Release());
-    ProcessChangeOwnerRequests(ctx);
+    TSimpleSharedPtr<TEvPQ::TEvChangeOwner> event(ev->Release());
+    UserActionAndTransactionEvents.emplace_back(std::move(event));
+    DBGTRACE_LOG("UserActionAndTransactionEvents.size=" << UserActionAndTransactionEvents.size());
+    ProcessTxsAndUserActs(ctx);
 }
 
 void TPartition::ProcessReserveRequests(const TActorContext& ctx) {
@@ -625,22 +625,23 @@ void TPartition::HandleWriteResponse(const TActorContext& ctx) {
     //HandleWrites(ctx);
     BecomeIdle(ctx);
     WriteInProgress = false;
+    DBGTRACE_LOG("WriteInProgress=" << WriteInProgress);
 }
 
 void TPartition::HandleOnWrite(const TEvPQ::TEvWrite& ev, const TActorContext& ctx) {
     DBGTRACE("TPartition::HandleOnWrite(TEvPQ::TEvWrite)");
-    DBGTRACE_LOG("Cookie=" << ev.Cookie);
-    DBGTRACE_LOG("MessageNo=" << ev.MessageNo);
-    DBGTRACE_LOG("OwnerCookie=" << ev.OwnerCookie);
-    DBGTRACE_LOG("Offset=" << ev.Offset);
-    for (size_t i = 0; i < ev.Msgs.size(); ++i) {
-        DBGTRACE_LOG("i=" << i);
-        const auto& msgs = ev.Msgs;
-        DBGTRACE_LOG("SourceId=" << msgs[i].SourceId);
-        DBGTRACE_LOG("SeqNo=" << msgs[i].SeqNo);
-        DBGTRACE_LOG("Data=" << msgs[i].Data);
-    }
-    DBGTRACE_LOG("InitialSeqNo=" << ev.InitialSeqNo);
+//    DBGTRACE_LOG("Cookie=" << ev.Cookie);
+//    DBGTRACE_LOG("MessageNo=" << ev.MessageNo);
+//    DBGTRACE_LOG("OwnerCookie=" << ev.OwnerCookie);
+//    DBGTRACE_LOG("Offset=" << ev.Offset);
+//    for (size_t i = 0; i < ev.Msgs.size(); ++i) {
+//        DBGTRACE_LOG("i=" << i);
+//        const auto& msgs = ev.Msgs;
+//        DBGTRACE_LOG("SourceId=" << msgs[i].SourceId);
+//        DBGTRACE_LOG("SeqNo=" << msgs[i].SeqNo);
+//        DBGTRACE_LOG("Data=" << msgs[i].Data);
+//    }
+//    DBGTRACE_LOG("InitialSeqNo=" << ev.InitialSeqNo);
     PQ_LOG_T("TPartition::HandleOnWrite TEvWrite.");
 
     if (!CanEnqueue()) {
@@ -698,7 +699,7 @@ void TPartition::HandleOnWrite(const TEvPQ::TEvWrite& ev, const TActorContext& c
         }
 
         ++it->second.NextMessageNo;
-        DBGTRACE_LOG("NextMessageNo=" << it->second.NextMessageNo);
+//        DBGTRACE_LOG("NextMessageNo=" << it->second.NextMessageNo);
         decReservedSize = it->second.DecReservedSize();
     }
 
@@ -1874,6 +1875,7 @@ void TPartition::HandleWrites(const TActorContext& ctx) {
     HandleWrites(*request, ctx);
     Y_ABORT_UNLESS(!PendingWriteRequest);
     PendingWriteRequest = std::move(request);
+    DBGTRACE_LOG("PendingWriteRequest is not null");
     RequestBlobQuota();
 //    if (!CanWrite()) {
 //        if (CanEnqueue()) {
@@ -1998,6 +2000,7 @@ void TPartition::WritePendingBlob() {
     // PQ -> CacheProxy -> KV
     Send(BlobCache, PendingWriteRequest.Release());
     PendingWriteRequest = nullptr;
+    DBGTRACE_LOG("PendingWriteRequest is null");
 #else
     Send(Tablet, PendingWriteRequest.Release());
 #endif

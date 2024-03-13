@@ -658,6 +658,7 @@ private:
     bool ProcessUserActionOrTransaction(TEvPQ::TEvSetClientInfo& event, const TActorContext& ctx);
     bool ProcessUserActionOrTransaction(const TEvPersQueue::TEvProposeTransaction& event, const TActorContext& ctx);
     bool ProcessUserActionOrTransaction(TTransaction& tx, const TActorContext& ctx);
+    bool ProcessUserActionOrTransaction(const TEvPQ::TEvChangeOwner& event, const TActorContext& ctx);
     bool ProcessUserActionOrTransaction(const TEvPQ::TEvReserveBytes& event, const TActorContext& ctx);
     bool ProcessUserActionOrTransaction(const TEvPQ::TEvWrite& event, const TActorContext& ctx);
     bool ProcessUserActionOrTransaction(const TEvPQ::TEvUpdateAvailableSize& event, const TActorContext& ctx);
@@ -675,6 +676,7 @@ private:
         std::variant<TSimpleSharedPtr<TEvPQ::TEvSetClientInfo>,             // user actions
                      TSimpleSharedPtr<TEvPersQueue::TEvProposeTransaction>, // immediate transaction
                      TSimpleSharedPtr<TTransaction>,                        // distributed transaction or update config
+                     TSimpleSharedPtr<TEvPQ::TEvChangeOwner>,
                      TSimpleSharedPtr<TEvPQ::TEvReserveBytes>,
                      TSimpleSharedPtr<TEvPQ::TEvWrite>,
                      TSimpleSharedPtr<TEvPQ::TEvUpdateAvailableSize>,
