@@ -333,6 +333,9 @@ void TPartition::HandleWakeup(const TActorContext& ctx) {
         avg.Update(now);
     }
 
+    if (UsersInfoWriteInProgress) {
+        return;
+    }
     if (CurrentStateFunc() == &TThis::StateWrite) {//Write will handle all itself
         return;
     }
@@ -342,6 +345,10 @@ void TPartition::HandleWakeup(const TActorContext& ctx) {
         WriteTimestampEstimate = now;
 
     THolder <TEvKeyValue::TEvRequest> request = MakeHolder<TEvKeyValue::TEvRequest>();
+
+    request->Record.SetCookie(NextKeyValueCookie++);
+    DBGTRACE_LOG("send TEvKeyValue::TEvRequest. cookie=" << request->Record.GetCookie());
+
     bool haveChanges = CleanUp(request.Get(), ctx);
     if (DiskIsFull) {
         AddCheckDiskRequest(request.Get(), NumChannels);
@@ -361,6 +368,8 @@ void TPartition::HandleWakeup(const TActorContext& ctx) {
 }
 
 void TPartition::AddMetaKey(TEvKeyValue::TEvRequest* request) {
+    DBGTRACE("TPartition::AddMetaKey");
+    DBGTRACE_LOG("Partition=" << Partition);
     //Set Start Offset
     auto write = request->Record.AddCmdWrite();
     TKeyPrefix ikey(TKeyPrefix::TypeMeta, Partition);
@@ -1386,6 +1395,7 @@ void TPartition::Handle(NReadQuoterEvents::TEvQuotaUpdated::TPtr& ev, const TAct
 
 void TPartition::Handle(TEvKeyValue::TEvResponse::TPtr& ev, const TActorContext& ctx) {
     DBGTRACE("TPartition::Handle(TEvKeyValue::TEvResponse)");
+    DBGTRACE_LOG("receive TEvKeyValue::TEvResponse. cookie=" << ev->Get()->Record.GetCookie());
     auto& response = ev->Get()->Record;
 
     //check correctness of response
@@ -1556,7 +1566,6 @@ void TPartition::ContinueProcessTxsAndUserActs(const TActorContext& ctx)
     DBGTRACE("TPartition::ContinueProcessTxsAndUserActs");
     Y_ABORT_UNLESS(!UsersInfoWriteInProgress);
     Y_ABORT_UNLESS(!TxInProgress);
-    Y_ABORT_UNLESS(!WriteInProgress);
 
     if (!UserActionAndTransactionEvents.empty()) {
         auto visitor = [this, &ctx](const auto& event) -> bool {
@@ -1591,6 +1600,8 @@ void TPartition::ContinueProcessTxsAndUserActs(const TActorContext& ctx)
     }
 
     THolder<TEvKeyValue::TEvRequest> request(new TEvKeyValue::TEvRequest);
+    request->Record.SetCookie(NextKeyValueCookie++);
+    DBGTRACE_LOG("send TEvKeyValue::TEvRequest. cookie=" << request->Record.GetCookie());
 
     if (TxIdHasChanged) {
         AddCmdWriteTxMeta(request->Record,
@@ -2677,6 +2688,7 @@ THolder<TEvPQ::TEvTxCommitDone> TPartition::MakeCommitDone(ui64 step, ui64 txId)
 }
 
 void TPartition::ScheduleUpdateAvailableSize(const TActorContext& ctx) {
+    DBGTRACE("TPartition::ScheduleUpdateAvailableSize");
     ctx.Schedule(UPDATE_AVAIL_SIZE_INTERVAL, new TEvPQ::TEvUpdateAvailableSize());
 }
 
@@ -2749,8 +2761,8 @@ void TPartition::Handle(TEvPQ::TEvApproveWriteQuota::TPtr& ev, const TActorConte
         TopicWriteQuotaWaitCounter->IncFor(TopicQuotaWaitTimeForCurrentBlob.MilliSeconds());
     }
 
-    if (CurrentStateFunc() == &TThis::StateIdle)
-        HandleWrites(ctx);
+//    if (CurrentStateFunc() == &TThis::StateIdle)
+//        HandleWrites(ctx);
 }
 
 void TPartition::Handle(NReadQuoterEvents::TEvQuotaCountersUpdated::TPtr& ev, const TActorContext& ctx) {

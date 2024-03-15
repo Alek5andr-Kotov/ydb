@@ -20,6 +20,7 @@
 #include <util/folder/path.h>
 #include <util/string/escape.h>
 #include <util/system/byteorder.h>
+#include <ydb/library/dbgtrace/debug_trace.h>
 
 #define VERIFY_RESULT_BLOB(blob, pos) \
     Y_ABORT_UNLESS(!blob.Data.empty(), "Empty data. SourceId: %s, SeqNo: %" PRIu64, blob.SourceId.data(), blob.SeqNo); \
@@ -139,6 +140,7 @@ void TPartition::ProcessHasDataRequests(const TActorContext& ctx) {
 }
 
 void TPartition::UpdateAvailableSize(const TActorContext& ctx) {
+    DBGTRACE("TPartition::UpdateAvailableSize");
     FilterDeadlinedWrites(ctx);
     ScheduleUpdateAvailableSize(ctx);
 }

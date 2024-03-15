@@ -20,6 +20,7 @@
 #include <util/system/types.h>
 
 #include "make_config.h"
+#include <ydb/library/dbgtrace/debug_trace.h>
 
 namespace NKikimr::NPQ {
 
@@ -209,8 +210,15 @@ protected:
                    bool ignoreQuotaDeadline = false, ui64 seqNo = 0);
     void SendGetWriteInfo(ui32 internalPartitionId);
 
+    void WaitKeyValueRequest();
+    void SendKeyValueResponse(NMsgBusProxy::EResponseStatus status);
+
+    void AddKeyValueOpsObserver();
+    void Handle(TEvKeyValue::TEvRequest::TPtr& ev);
+
     TMaybe<TTestContext> Ctx;
     TMaybe<TFinalizer> Finalizer;
+    TTestActorRuntimeBase::TEventObserver PrevObserverFunc;
 
     TActorId ActorId;
 
@@ -218,6 +226,7 @@ protected:
     NKikimrPQ::TPQTabletConfig Config;
 
     TAutoPtr<TTabletCountersBase> TabletCounters;
+    TMaybe<ui64> LastKeyValueRequestCookie;
 };
 
 void TPartitionFixture::SetUp(NUnitTest::TTestContext&)
@@ -297,27 +306,36 @@ void TPartitionFixture::CreatePartitionActor(const TPartitionId& id,
 void TPartitionFixture::CreatePartition(const TCreatePartitionParams& params,
                                         const TConfigParams& config)
 {
+    DBGTRACE("TPartitionFixture::CreatePartition");
     if ((params.Begin == 0) && (params.End == 0)) {
+        DBGTRACE_LOG("new partition");
         CreatePartitionActor(params.Partition, config, true, {});
 
         WaitConfigRequest();
         SendConfigResponse(params.Config);
     } else {
+        DBGTRACE_LOG("old partition");
         CreatePartitionActor(params.Partition, config, false, params.Transactions);
 
+        DBGTRACE_LOG("wait for config request");
         WaitConfigRequest();
         SendConfigResponse(params.Config);
 
+        DBGTRACE_LOG("wait for disk status request");
         WaitDiskStatusRequest();
         SendDiskStatusResponse();
 
+        DBGTRACE_LOG("wait for meta read request");
         WaitMetaReadRequest();
         SendMetaReadResponse(params.PlanStep, params.TxId);
 
+        DBGTRACE_LOG("wait for info range request");
         WaitInfoRangeRequest();
         SendInfoRangeResponse(params.Partition.InternalPartitionId, params.Config.Consumers);
 
+        DBGTRACE_LOG("wait for data range request");
         WaitDataRangeRequest();
+        //AddKeyValueOpsObserver();
         SendDataRangeResponse(params.Begin, params.End);
     }
 }
@@ -531,6 +549,7 @@ void TPartitionFixture::SendWrite
 
 void TPartitionFixture::SendChangeOwner(const ui64 cookie, const TString& owner, const TActorId& pipeClient, const bool force)
 {
+    DBGTRACE("TPartitionFixture::SendChangeOwner");
     auto event = MakeHolder<TEvPQ::TEvChangeOwner>(cookie, owner, pipeClient, Ctx->Edge, force, true);
     Ctx->Runtime->SingleSys()->Send(new IEventHandle(ActorId, Ctx->Edge, event.Release()));
 }
@@ -592,10 +611,75 @@ void TPartitionFixture::WaitConfigRequest()
     UNIT_ASSERT_VALUES_EQUAL(event->Record.CmdReadSize(), 1);
 }
 
+void TPartitionFixture::WaitKeyValueRequest()
+{
+    auto event = Ctx->Runtime->GrabEdgeEvent<TEvKeyValue::TEvRequest>();
+    UNIT_ASSERT(event != nullptr);
+
+    if (event->Record.HasCookie()) {
+        LastKeyValueRequestCookie = event->Record.GetCookie();
+    } else {
+        LastKeyValueRequestCookie = Nothing();
+    }
+}
+
+void TPartitionFixture::SendKeyValueResponse(NMsgBusProxy::EResponseStatus status)
+{
+    auto event = MakeHolder<TEvKeyValue::TEvResponse>();
+    event->Record.SetStatus(status);
+    if (LastKeyValueRequestCookie.Defined()) {
+        event->Record.SetCookie(*LastKeyValueRequestCookie);
+    }
+
+    Ctx->Runtime->SingleSys()->Send(new IEventHandle(ActorId, Ctx->Edge, event.Release()));
+}
+
+void TPartitionFixture::AddKeyValueOpsObserver()
+{
+    auto observer = [this](TAutoPtr<IEventHandle>& ev) -> auto {
+        if (ev->GetTypeRewrite() != TEvKeyValue::EvRequest) {
+            return TTestActorRuntimeBase::EEventAction::PROCESS;
+        };
+
+        DBGTRACE_LOG("sender=" << ev->Sender << ", recipient=" << ev->Recipient);
+        DBGTRACE_LOG("actor=" << ActorId << ", edge=" << Ctx->Edge);
+
+//        if ((ev->Recipient != Ctx->Edge) || (ev->Sender != ActorId)) {
+//            return TTestActorRuntimeBase::EEventAction::PROCESS;
+//        }
+
+        switch (ev->GetTypeRewrite()) {
+            hFunc(TEvKeyValue::TEvRequest, Handle);
+            default: return PrevObserverFunc(ev);
+        }
+
+        return ev ? TTestActorRuntimeBase::EEventAction::PROCESS : TTestActorRuntimeBase::EEventAction::DROP;
+    };
+
+    PrevObserverFunc = Ctx->Runtime->SetObserverFunc(observer);
+}
+
+void TPartitionFixture::Handle(TEvKeyValue::TEvRequest::TPtr& ev)
+{
+    DBGTRACE("TPartitionFixture::Handle(TEvKeyValue::TEvRequest)");
+    DBGTRACE_LOG("receive TEvKeyValue::TEvRequest. cookie=" << ev->Get()->Record.GetCookie());
+    DBGTRACE_LOG("event=" << ev->Get()->Record);
+
+    auto event = MakeHolder<TEvKeyValue::TEvResponse>();
+    event->Record.SetStatus(NMsgBusProxy::MSTATUS_OK);
+    event->Record.SetCookie(ev->Get()->Record.GetCookie());
+
+    DBGTRACE_LOG("send TEvKeyValue::TEvResponse. cookie=" << event->Record.GetCookie());
+    Ctx->Runtime->SingleSys()->Send(new IEventHandle(ActorId, Ctx->Edge, event.Release()));
+
+    ev.Reset();
+}
+
 void TPartitionFixture::SendConfigResponse(const TConfigParams& config)
 {
     auto event = MakeHolder<TEvKeyValue::TEvResponse>();
     event->Record.SetStatus(NMsgBusProxy::MSTATUS_OK);
+    event->Record.SetCookie(300'000);
 
     auto read = event->Record.AddReadResult();
     if (config.Consumers.empty()) {
@@ -623,8 +707,10 @@ void TPartitionFixture::WaitDiskStatusRequest()
 
 void TPartitionFixture::SendDiskStatusResponse()
 {
+    DBGTRACE("TPartitionFixture::SendDiskStatusResponse");
     auto event = MakeHolder<TEvKeyValue::TEvResponse>();
     event->Record.SetStatus(NMsgBusProxy::MSTATUS_OK);
+    event->Record.SetCookie(300'001);
 
     auto result = event->Record.AddGetStatusResult();
     result->SetStatus(NKikimrProto::OK);
@@ -645,6 +731,7 @@ void TPartitionFixture::SendMetaReadResponse(TMaybe<ui64> step, TMaybe<ui64> txI
 {
     auto event = MakeHolder<TEvKeyValue::TEvResponse>();
     event->Record.SetStatus(NMsgBusProxy::MSTATUS_OK);
+    event->Record.SetCookie(300'002);
 
     //
     // NKikimrPQ::TPartitionMeta
@@ -691,6 +778,7 @@ void TPartitionFixture::SendInfoRangeResponse(ui32 partition,
 {
     auto event = MakeHolder<TEvKeyValue::TEvResponse>();
     event->Record.SetStatus(NMsgBusProxy::MSTATUS_OK);
+    event->Record.SetCookie(300'003);
 
     auto read = event->Record.AddReadRangeResult();
     if (consumers.empty()) {
@@ -737,6 +825,7 @@ void TPartitionFixture::SendDataRangeResponse(ui64 begin, ui64 end)
 
     auto event = MakeHolder<TEvKeyValue::TEvResponse>();
     event->Record.SetStatus(NMsgBusProxy::MSTATUS_OK);
+    event->Record.SetCookie(300'004);
 
     auto read = event->Record.AddReadRangeResult();
     read->SetStatus(NKikimrProto::OK);
@@ -1452,7 +1541,7 @@ Y_UNIT_TEST_F(ReserveSubDomainOutOfSpace, TPartitionFixture)
 
 Y_UNIT_TEST_F(WriteSubDomainOutOfSpace, TPartitionFixture)
 {
-    Ctx->Runtime->GetAppData().FeatureFlags.SetEnableKeyvalueLogBatching(true);
+    DBGTRACE("WriteSubDomainOutOfSpace");
     Ctx->Runtime->GetAppData().FeatureFlags.SetEnableTopicDiskSubDomainQuota(true);
     Ctx->Runtime->GetAppData().PQConfig.MutableQuotingConfig()->SetQuotaWaitDurationMs(300);
     CreatePartition({
@@ -1468,32 +1557,50 @@ Y_UNIT_TEST_F(WriteSubDomainOutOfSpace, TPartitionFixture)
                     //
                     {.Version=2, .Consumers={{.Consumer="client-1"}}});
 
+    DBGTRACE_LOG("SendSubDomainStatus");
     SendSubDomainStatus(true);
+    WaitKeyValueRequest();
+    SendKeyValueResponse(NMsgBusProxy::MSTATUS_OK);
 
+    DBGTRACE_LOG("SendChangeOwner");
     ui64 cookie = 1;
     ui64 messageNo = 0;
 
     SendChangeOwner(cookie, "owner1", Ctx->Edge, true);
+    WaitKeyValueRequest();
+    SendKeyValueResponse(NMsgBusProxy::MSTATUS_OK);
     auto ownerEvent = Ctx->Runtime->GrabEdgeEvent<TEvPQ::TEvProxyResponse>(TDuration::Seconds(30));
     UNIT_ASSERT(ownerEvent != nullptr);
     auto ownerCookie = ownerEvent->Response->GetPartitionResponse().GetCmdGetOwnershipResult().GetOwnerCookie();
 
     TAutoPtr<IEventHandle> handle;
-    std::function<bool(const TEvPQ::TEvError&)> truth = [&](const TEvPQ::TEvError& e) { return cookie == e.Cookie; };
+    std::function<bool(const TEvPQ::TEvError&)> truth = [&](const TEvPQ::TEvError& e) {
+        DBGTRACE_LOG("cookie=" << cookie << ", e.Cookie=" << e.Cookie);
+        return cookie == e.Cookie;
+    };
 
     TString data = "data for write";
 
+    DBGTRACE_LOG("SendWrite. cookie=" << (cookie + 1) << ", messageNo=" << messageNo);
     // First message will be processed because used storage 0 and limit 0. That is, the limit is not exceeded.
     SendWrite(++cookie, messageNo, ownerCookie, (messageNo + 1) * 100, data);
     messageNo++;
 
+    WaitKeyValueRequest();
     SendDiskStatusResponse();
 
+    DBGTRACE_LOG("SendWrite. cookie=" << (cookie + 1) << ", messageNo=" << messageNo);
     // Second message will not be processed because the limit is exceeded.
     SendWrite(++cookie, messageNo, ownerCookie, (messageNo + 1) * 100, data);
     messageNo++;
 
+    WaitKeyValueRequest();
     SendDiskStatusResponse();
+    DBGTRACE_LOG("unknown-actions");
+    WaitKeyValueRequest();
+    SendKeyValueResponse(NMsgBusProxy::MSTATUS_OK);
+
+    DBGTRACE_LOG("wait for reply");
     auto event = Ctx->Runtime->GrabEdgeEventIf<TEvPQ::TEvError>(handle, truth, TDuration::Seconds(1));
     UNIT_ASSERT(event != nullptr);
     UNIT_ASSERT_EQUAL(NPersQueue::NErrorCode::OVERLOAD, event->ErrorCode);

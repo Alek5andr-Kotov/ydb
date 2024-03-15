@@ -145,12 +145,14 @@ namespace NPQ {
             THolder<TEvKeyValue::TEvRequest> request = kvReq.MakeKvRequest(); // before save
             ui64 cookie = SaveKvRequest(std::move(kvReq));
             request->Record.SetCookie(cookie);
+            DBGTRACE_LOG("send TEvKeyValue::TEvRequest. cookie=" << request->Record.GetCookie());
             ctx.Send(Tablet, request.Release()); // -> KV
         }
 
         void Handle(TEvKeyValue::TEvResponse::TPtr& ev, const TActorContext& ctx)
         {
             DBGTRACE("TPQCacheProxy::Handle(TEvKeyValue::TEvResponse)");
+            DBGTRACE_LOG("receive TEvKeyValue::TEvResponse. cookie=" << ev->Get()->Record.GetCookie());
             auto resp = ev->Get()->Record;
             Y_ABORT_UNLESS(resp.HasCookie());
             auto it = KvRequests.find(resp.GetCookie());
@@ -266,6 +268,7 @@ namespace NPQ {
         void Handle(TEvKeyValue::TEvRequest::TPtr& ev, const TActorContext& ctx)
         {
             DBGTRACE("TPQCacheProxy::Handle(TEvKeyValue::TEvRequest)");
+            DBGTRACE_LOG("receive TEvKeyValue::TEvRequest. cookie=" << ev->Get()->Record.GetCookie());
             LOG_DEBUG_S(ctx, NKikimrServices::PERSQUEUE, "CacheProxy. Passthrough write request to KV");
 
             auto srcRequest = ev->Get()->Record;
@@ -298,6 +301,7 @@ namespace NPQ {
             THolder<TEvKeyValue::TEvRequest> request = MakeHolder<TEvKeyValue::TEvRequest>();
             request->Record = std::move(ev->Get()->Record);
             request->Record.SetCookie(cookie);
+            DBGTRACE_LOG("send TEvKeyValue::TEvRequest. cookie=" << request->Record.GetCookie());
             ctx.Send(Tablet, request.Release()); // -> KV
         }
 

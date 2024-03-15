@@ -665,6 +665,7 @@ private:
     bool ProcessUserActionOrTransaction(TEvPQ::TEvRegisterMessageGroup& event, const TActorContext& ctx);
     bool ProcessUserActionOrTransaction(TEvPQ::TEvDeregisterMessageGroup& event, const TActorContext& ctx);
     bool ProcessUserActionOrTransaction(const TEvPQ::TEvSplitMessageGroup& event, const TActorContext& ctx);
+//    bool ProcessUserActionOrTransaction(const TEvPQ::TEvSubDomainStatus& event, const TActorContext& ctx);
 
     template<class T>
     bool ProcessUserActionOrTransactionT(T& event, const TActorContext& ctx);
@@ -816,9 +817,12 @@ private:
     void HandleOnWrite(TEvPQ::TEvRegisterMessageGroup& event, const TActorContext& ctx);
     void HandleOnWrite(TEvPQ::TEvDeregisterMessageGroup& event, const TActorContext& ctx);
     void HandleOnWrite(const TEvPQ::TEvSplitMessageGroup& event, const TActorContext& ctx);
+//    void HandleOnWrite(const TEvPQ::TEvSubDomainStatus& event, const TActorContext& ctx);
 
     template <class T>
     void EnqueueEvent(TAutoPtr<TEventHandle<T>>& ev, const TActorContext& ctx);
+
+    ui64 NextKeyValueCookie = 100'000;
 };
 
 } // namespace NKikimr::NPQ

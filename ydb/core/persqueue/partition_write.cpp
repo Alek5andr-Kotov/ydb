@@ -1118,9 +1118,9 @@ void TPartition::ProcessChangeOwnerRequests(const TActorContext& ctx) {
         }
         WaitToChangeOwner.pop_front();
     }
-    if (CurrentStateFunc() == &TThis::StateIdle) {
-        HandleWrites(ctx);
-    }
+//    if (CurrentStateFunc() == &TThis::StateIdle) {
+//        HandleWrites(ctx);
+//    }
 }
 
 void TPartition::CancelAllWritesOnWrite(const TActorContext& ctx, TEvKeyValue::TEvRequest* request, const TString& errorStr, const TWriteMsg& p, TPartitionSourceManager::TModificationBatch& sourceIdBatch, NPersQueue::NErrorCode::EErrorCode errorCode) {
@@ -1779,6 +1779,7 @@ bool TPartition::ProcessWrites(TEvKeyValue::TEvRequest* request, TInstant, const
 }
 
 void TPartition::FilterDeadlinedWrites(const TActorContext& ctx) {
+    DBGTRACE("TPartition::FilterDeadlinedWrites");
     if (QuotaDeadline == TInstant::Zero() || QuotaDeadline > ctx.Now())
         return;
     PQ_LOG_T("TPartition::FilterDeadlinedWrites.");
@@ -1824,6 +1825,7 @@ void TPartition::HandleWrites(TEvKeyValue::TEvRequest& request, const TActorCont
             return;
         }
     }
+    Y_ABORT_UNLESS(!UsersInfoWriteInProgress);
     if (PendingWriteRequest) {
         DBGTRACE_LOG("has PendingWriteRequest");
         return;
@@ -1871,7 +1873,13 @@ void TPartition::HandleWrites(TEvKeyValue::TEvRequest& request, const TActorCont
 
 void TPartition::HandleWrites(const TActorContext& ctx) {
     DBGTRACE("TPartition::HandleWrites (2)");
+    if (UsersInfoWriteInProgress) {
+        DBGTRACE_LOG("writing");
+        return;
+    }
     THolder<TEvKeyValue::TEvRequest> request(new TEvKeyValue::TEvRequest);
+    request->Record.SetCookie(NextKeyValueCookie++);
+    DBGTRACE_LOG("send TEvKeyValue::TEvRequest. cookie=" << request->Record.GetCookie());
     HandleWrites(*request, ctx);
     Y_ABORT_UNLESS(!PendingWriteRequest);
     PendingWriteRequest = std::move(request);

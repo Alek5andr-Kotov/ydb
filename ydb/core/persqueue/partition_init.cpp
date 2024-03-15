@@ -223,6 +223,7 @@ TInitDiskStatusStep::TInitDiskStatusStep(TInitializer* initializer)
 void TInitDiskStatusStep::Execute(const TActorContext& ctx) {
     DBGTRACE("TInitDiskStatusStep::Execute");
     THolder<TEvKeyValue::TEvRequest> request(new TEvKeyValue::TEvRequest);
+    request->Record.SetCookie(200'000);
 
     AddCheckDiskRequest(request.Get(), Partition()->NumChannels);
 
@@ -258,6 +259,7 @@ TInitMetaStep::TInitMetaStep(TInitializer* initializer)
 
 void TInitMetaStep::Execute(const TActorContext& ctx) {
     DBGTRACE("TInitMetaStep::Execute");
+    DBGTRACE_LOG("PartitionId=" << PartitionId());
     auto addKey = [](NKikimrClient::TKeyValueRequest& request, TKeyPrefix::EType type, const TPartitionId& partition) {
         auto read = request.AddCmdRead();
         TKeyPrefix key{type, partition};
@@ -265,6 +267,7 @@ void TInitMetaStep::Execute(const TActorContext& ctx) {
     };
 
     THolder<TEvKeyValue::TEvRequest> request(new TEvKeyValue::TEvRequest);
+    request->Record.SetCookie(200'001);
 
     addKey(request->Record, TKeyPrefix::TypeMeta, PartitionId());
     addKey(request->Record, TKeyPrefix::TypeTxMeta, PartitionId());
@@ -573,6 +576,7 @@ void TInitDataStep::Execute(const TActorContext &ctx) {
     }
 
     THolder<TEvKeyValue::TEvRequest> request(new TEvKeyValue::TEvRequest);
+    request->Record.SetCookie(200'002);
     for (auto& key: keys) {
         auto read = request->Record.AddCmdRead();
         read->SetKey(key);
@@ -970,6 +974,7 @@ static std::pair<TKeyPrefix, TKeyPrefix> MakeKeyPrefixRange(TKeyPrefix::EType ty
 static void RequestRange(const TActorContext& ctx, const TActorId& dst, const TPartitionId& partition,
                          TKeyPrefix::EType c, bool includeData = false, const TString& key = "", bool dropTmp = false) {
     THolder<TEvKeyValue::TEvRequest> request(new TEvKeyValue::TEvRequest);
+    request->Record.SetCookie(200'003);
 
     auto keyPrefixes = MakeKeyPrefixRange(c, partition);
     TKeyPrefix& from = keyPrefixes.first;
