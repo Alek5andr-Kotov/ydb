@@ -213,7 +213,7 @@ private:
 
     TInstant GetWriteTimeEstimate(ui64 offset) const;
     bool AppendHeadWithNewWrites(TEvKeyValue::TEvRequest* request, const TActorContext& ctx,
-        TPartitionSourceManager::TModificationBatch& sourceIdBatch);
+                                 TPartitionSourceManager::TModificationBatch& sourceIdBatch);
     bool CleanUp(TEvKeyValue::TEvRequest* request, const TActorContext& ctx);
 
     // Removes blobs that are no longer required. Blobs are no longer required if the storage time of all messages
@@ -581,6 +581,18 @@ private:
     ProcessResult ProcessRequest(TSplitMessageGroupMsg& msg, ProcessParameters& parameters);
     ProcessResult ProcessRequest(TWriteMsg& msg, ProcessParameters& parameters, TEvKeyValue::TEvRequest* request, const TActorContext& ctx);
 
+    void BeginAppendHeadWithNewWrites(const TActorContext& ctx,
+                                      ProcessParameters& parameters);
+    ProcessResult AppendHeadWithNewWrite(TEvKeyValue::TEvRequest* request, const TActorContext& ctx,
+                                         ProcessParameters& parameters,
+                                         TMessage& msg);
+    void TryAppendHeadWithHeartbeat(TEvKeyValue::TEvRequest* request,
+                                    const TActorContext& ctx,
+                                    TPartitionSourceManager::TModificationBatch& sourceIdBatch,
+                                    ProcessParameters& parameters);
+    void EndAppendHeadWithNewWrites(const TActorContext& ctx,
+                                    const ProcessParameters& parameters);
+
 private:
     ui64 TabletID;
     ui32 TabletGeneration;
@@ -618,7 +630,6 @@ private:
 
     std::deque<TMessage> Requests;
     std::deque<TMessage> Responses;
-    std::queue<TMessage> PendingRequests; // requests waiting for write quotas
     bool WaitingForWriteQuotaToBeApproved = false;
 
     THead Head;

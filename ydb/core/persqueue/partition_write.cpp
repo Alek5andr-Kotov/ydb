@@ -1160,12 +1160,9 @@ TPartition::ProcessResult TPartition::ProcessRequest(TWriteMsg& p, ProcessParame
         return ProcessResult::Continue;
 }
 
-bool TPartition::AppendHeadWithNewWrites(TEvKeyValue::TEvRequest* request, const TActorContext& ctx,
-                                         TPartitionSourceManager::TModificationBatch& sourceIdBatch)
+void TPartition::BeginAppendHeadWithNewWrites(const TActorContext& ctx,
+                                              ProcessParameters& parameters)
 {
-    PQ_LOG_T("TPartition::AppendHeadWithNewWrites.");
-
-    ProcessParameters parameters(sourceIdBatch);
     parameters.CurOffset = PartitionedBlob.IsInited() ? PartitionedBlob.GetOffset() : EndOffset;
 
     WriteCycleSize = 0;
@@ -1183,42 +1180,32 @@ bool TPartition::AppendHeadWithNewWrites(TEvKeyValue::TEvRequest* request, const
 
     parameters.OldPartsCleared = false;
     parameters.HeadCleared = (Head.PackedSize == 0);
+}
 
-
-    //TODO: Process here not TClientBlobs, but also TBatches from LB(LB got them from pushclient too)
-    //Process is following: if batch contains already written messages or only one client message part -> unpack it and process as several TClientBlobs
-    //otherwise write this batch as is to head;
-
-    bool run = true;
-    while (run && !Requests.empty() && WriteCycleSize < MAX_WRITE_CYCLE_SIZE) { //head is not too big
-        auto pp = std::move(Requests.front());
-        Requests.pop_front();
-
-        ProcessResult result = ProcessResult::Continue;
-        if (pp.IsWrite()) {
-            result = ProcessRequest(pp.GetWrite(), parameters, request, ctx);
-        } else if (pp.IsRegisterMessageGroup()) {
-            result = ProcessRequest(pp.GetRegisterMessageGroup(), parameters);
-        } else if (pp.IsDeregisterMessageGroup()) {
-            result = ProcessRequest(pp.GetDeregisterMessageGroup(), parameters);
-        } else if (pp.IsSplitMessageGroup()) {
-            result = ProcessRequest(pp.GetSplitMessageGroup(), parameters);
-        } else {
-            Y_ABORT_UNLESS(pp.IsOwnership());
-        }
-
-        switch (result) {
-            case ProcessResult::Abort:
-                return false;
-            case ProcessResult::Break:
-                Requests.push_front(std::move(pp));
-                run = false;
-                break;
-            case ProcessResult::Continue:
-                EmplaceResponse(std::move(pp), ctx);
-                break;
-        }
+TPartition::ProcessResult TPartition::AppendHeadWithNewWrite(TEvKeyValue::TEvRequest* request, const TActorContext& ctx,
+                                                             ProcessParameters& parameters,
+                                                             TMessage& msg)
+{
+    ProcessResult result = ProcessResult::Continue;
+    if (msg.IsWrite()) {
+        result = ProcessRequest(msg.GetWrite(), parameters, request, ctx);
+    } else if (msg.IsRegisterMessageGroup()) {
+        result = ProcessRequest(msg.GetRegisterMessageGroup(), parameters);
+    } else if (msg.IsDeregisterMessageGroup()) {
+        result = ProcessRequest(msg.GetDeregisterMessageGroup(), parameters);
+    } else if (msg.IsSplitMessageGroup()) {
+        result = ProcessRequest(msg.GetSplitMessageGroup(), parameters);
+    } else {
+        Y_ABORT_UNLESS(msg.IsOwnership());
     }
+    return result;
+}
+
+void TPartition::TryAppendHeadWithHeartbeat(TEvKeyValue::TEvRequest* request,
+                                            const TActorContext& ctx,
+                                            TPartitionSourceManager::TModificationBatch& sourceIdBatch,
+                                            ProcessParameters& parameters)
+{
     if (const auto heartbeat = sourceIdBatch.CanEmitHeartbeat()) {
         if (heartbeat->Version > LastEmittedHeartbeat) {
             LOG_INFO_S(
@@ -1253,8 +1240,11 @@ bool TPartition::AppendHeadWithNewWrites(TEvKeyValue::TEvRequest* request, const
             LastEmittedHeartbeat = heartbeat->Version;
         }
     }
+}
 
-
+void TPartition::EndAppendHeadWithNewWrites(const TActorContext& ctx,
+                                            const ProcessParameters& parameters)
+{
     UpdateWriteBufferIsFullState(ctx.Now());
 
     if (!NewHead.Batches.empty() && !NewHead.Batches.back().Packed) {
@@ -1267,6 +1257,41 @@ bool TPartition::AppendHeadWithNewWrites(TEvKeyValue::TEvRequest* request, const
 
     Y_ABORT_UNLESS((parameters.HeadCleared ? 0 : Head.PackedSize) + NewHead.PackedSize <= MaxBlobSize); //otherwise last PartitionedBlob.Add must compact all except last cl
     MaxWriteResponsesSize = Max<ui32>(MaxWriteResponsesSize, Responses.size());
+}
+
+bool TPartition::AppendHeadWithNewWrites(TEvKeyValue::TEvRequest* request, const TActorContext& ctx,
+                                         TPartitionSourceManager::TModificationBatch& sourceIdBatch)
+{
+    PQ_LOG_T("TPartition::AppendHeadWithNewWrites.");
+
+    ProcessParameters parameters(sourceIdBatch);
+
+    BeginAppendHeadWithNewWrites(ctx, parameters);
+
+
+    //TODO: Process here not TClientBlobs, but also TBatches from LB(LB got them from pushclient too)
+    //Process is following: if batch contains already written messages or only one client message part -> unpack it and process as several TClientBlobs
+    //otherwise write this batch as is to head;
+
+    bool run = true;
+    while (run && !Requests.empty() && WriteCycleSize < MAX_WRITE_CYCLE_SIZE) { //head is not too big
+        auto pp = std::move(Requests.front());
+        Requests.pop_front();
+
+        switch (AppendHeadWithNewWrite(request, ctx, parameters, pp)) {
+            case ProcessResult::Abort:
+                return false;
+            case ProcessResult::Break:
+                Requests.push_front(std::move(pp));
+                run = false;
+                break;
+            case ProcessResult::Continue:
+                EmplaceResponse(std::move(pp), ctx);
+                break;
+        }
+    }
+    TryAppendHeadWithHeartbeat(request, ctx, sourceIdBatch, parameters);
+    EndAppendHeadWithNewWrites(ctx, parameters);
 
     return parameters.HeadCleared;
 }
