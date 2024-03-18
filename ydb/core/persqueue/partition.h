@@ -555,7 +555,7 @@ private:
     }
 
 private:
-    enum class ProcessResult {
+    enum class EProcessResult {
         Continue,
         Abort,
         Break
@@ -573,10 +573,10 @@ private:
         bool HeadCleared;
     };
 
-    ProcessResult ProcessRequest(TRegisterMessageGroupMsg& msg, ProcessParameters& parameters);
-    ProcessResult ProcessRequest(TDeregisterMessageGroupMsg& msg, ProcessParameters& parameters);
-    ProcessResult ProcessRequest(TSplitMessageGroupMsg& msg, ProcessParameters& parameters);
-    ProcessResult ProcessRequest(TWriteMsg& msg, ProcessParameters& parameters, TEvKeyValue::TEvRequest* request, const TActorContext& ctx);
+    EProcessResult ProcessRequest(TRegisterMessageGroupMsg& msg, ProcessParameters& parameters);
+    EProcessResult ProcessRequest(TDeregisterMessageGroupMsg& msg, ProcessParameters& parameters);
+    EProcessResult ProcessRequest(TSplitMessageGroupMsg& msg, ProcessParameters& parameters);
+    EProcessResult ProcessRequest(TWriteMsg& msg, ProcessParameters& parameters, TEvKeyValue::TEvRequest* request, const TActorContext& ctx);
 
     struct TKvWriteContext {
         // HandleWrites
@@ -598,9 +598,9 @@ private:
                                  TKvWriteContext& writeCtx);
     void BeginAppendHeadWithNewWrites(const TActorContext& ctx,
                                       ProcessParameters& parameters);
-    ProcessResult AppendHeadWithNewWrite(TEvKeyValue::TEvRequest* request, const TActorContext& ctx,
-                                         ProcessParameters& parameters,
-                                         TMessage& msg);
+    EProcessResult AppendHeadWithNewWrite(TEvKeyValue::TEvRequest* request, const TActorContext& ctx,
+                                          ProcessParameters& parameters,
+                                          TMessage& msg);
     void TryAppendHeadWithHeartbeat(TEvKeyValue::TEvRequest* request,
                                     const TActorContext& ctx,
                                     TPartitionSourceManager::TModificationBatch& sourceIdBatch,
