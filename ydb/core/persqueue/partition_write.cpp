@@ -1501,7 +1501,8 @@ bool TPartition::EndProcessWrites(TEvKeyValue::TEvRequest* request, TKvWriteCont
     return true;
 }
 
-bool TPartition::ProcessWrites(TEvKeyValue::TEvRequest* request, TKvWriteContext& writeCtx, const TActorContext& ctx) {
+bool TPartition::ProcessWrites(TEvKeyValue::TEvRequest* request, TKvWriteContext& writeCtx, const TActorContext& ctx)
+{
     PQ_LOG_T("TPartition::ProcessWrites.");
     if (!BeginProcessWrites(request, writeCtx, ctx)) {
         return false;
@@ -1565,10 +1566,23 @@ void TPartition::HandleWrites(const TActorContext& ctx) {
     PQ_LOG_T("TPartition::HandleWrites. Requests.size()=" << Requests.size());
     Become(&TThis::StateWrite);
 
-    TKvWriteContext writeCtx;
     THolder<TEvKeyValue::TEvRequest> request(new TEvKeyValue::TEvRequest);
 
+    if (!HandleWrites(request.Get(), ctx)) {
+        return;
+    }
+
+    WritesTotal.Inc();
+    Y_ABORT_UNLESS(!PendingWriteRequest);
+    PendingWriteRequest = std::move(request);
+    RequestBlobQuota();
+}
+
+bool TPartition::HandleWrites(TEvKeyValue::TEvRequest* request, const TActorContext& ctx)
+{
     Y_ABORT_UNLESS(Head.PackedSize + NewHead.PackedSize <= 2 * MaxSizeCheck);
+
+    TKvWriteContext writeCtx;
 
     writeCtx.Now = ctx.Now();
     WriteCycleStartTime = writeCtx.Now;
@@ -1578,17 +1592,17 @@ void TPartition::HandleWrites(const TActorContext& ctx) {
 
     if (!Requests.empty() && DiskIsFull) {
         CancelAllWritesOnIdle(ctx);
-        AddCheckDiskRequest(request.Get(), NumChannels);
+        AddCheckDiskRequest(request, NumChannels);
         writeCtx.HaveCheckDisk = true;
     } else {
-        writeCtx.HaveData = ProcessWrites(request.Get(), writeCtx, ctx);
+        writeCtx.HaveData = ProcessWrites(request, writeCtx, ctx);
     }
-    writeCtx.HaveDrop = CleanUp(request.Get(), ctx);
+    writeCtx.HaveDrop = CleanUp(request, ctx);
 
     ProcessReserveRequests(ctx);
     if (!writeCtx.HaveData && !writeCtx.HaveDrop && !writeCtx.HaveCheckDisk) { //no data writed/deleted
         if (!Requests.empty()) { //there could be change ownership requests that
-            bool res = ProcessWrites(request.Get(), writeCtx, ctx);
+            bool res = ProcessWrites(request, writeCtx, ctx);
             Y_ABORT_UNLESS(!res);
         }
         Y_ABORT_UNLESS(Requests.empty()
@@ -1596,13 +1610,10 @@ void TPartition::HandleWrites(const TActorContext& ctx) {
                     || WaitingForSubDomainQuota(ctx)); //in this case all writes must be processed or no quota left
         AnswerCurrentWrites(ctx); //in case if all writes are already done - no answer will be called on kv write, no kv write at all
         BecomeIdle(ctx);
-        return;
+        return false;
     }
 
-    WritesTotal.Inc();
-    Y_ABORT_UNLESS(!PendingWriteRequest);
-    PendingWriteRequest = std::move(request);
-    RequestBlobQuota();
+    return true;
 }
 
 void TPartition::RequestQuotaForWriteBlobRequest(size_t dataSize, ui64 cookie) {

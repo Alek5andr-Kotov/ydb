@@ -612,6 +612,8 @@ private:
     bool BeginProcessWrites(TEvKeyValue::TEvRequest* request, TKvWriteContext& writeCtx, const TActorContext& ctx);
     bool EndProcessWrites(TEvKeyValue::TEvRequest* request, TKvWriteContext& writeCtx, const TActorContext& ctx);
 
+    bool HandleWrites(TEvKeyValue::TEvRequest* request, const TActorContext& ctx);
+
 private:
     ui64 TabletID;
     ui32 TabletGeneration;
