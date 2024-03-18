@@ -1260,40 +1260,40 @@ void TPartition::EndAppendHeadWithNewWrites(const TActorContext& ctx,
 }
 
 bool TPartition::AppendHeadWithNewWrites(TEvKeyValue::TEvRequest* request, const TActorContext& ctx,
-                                         TPartitionSourceManager::TModificationBatch& sourceIdBatch)
+                                         TKvWriteContext& writeCtx)
 {
     PQ_LOG_T("TPartition::AppendHeadWithNewWrites.");
 
-    ProcessParameters parameters(sourceIdBatch);
+    writeCtx.Parameters.ConstructInPlace(*writeCtx.SourceIdBatch);
 
-    BeginAppendHeadWithNewWrites(ctx, parameters);
+    BeginAppendHeadWithNewWrites(ctx, *writeCtx.Parameters);
 
 
     //TODO: Process here not TClientBlobs, but also TBatches from LB(LB got them from pushclient too)
     //Process is following: if batch contains already written messages or only one client message part -> unpack it and process as several TClientBlobs
     //otherwise write this batch as is to head;
 
-    bool run = true;
-    while (run && !Requests.empty() && WriteCycleSize < MAX_WRITE_CYCLE_SIZE) { //head is not too big
+    writeCtx.Run = true;
+    while (writeCtx.Run && !Requests.empty() && WriteCycleSize < MAX_WRITE_CYCLE_SIZE) { //head is not too big
         auto pp = std::move(Requests.front());
         Requests.pop_front();
 
-        switch (AppendHeadWithNewWrite(request, ctx, parameters, pp)) {
+        switch (AppendHeadWithNewWrite(request, ctx, *writeCtx.Parameters, pp)) {
             case ProcessResult::Abort:
                 return false;
             case ProcessResult::Break:
                 Requests.push_front(std::move(pp));
-                run = false;
+                writeCtx.Run = false;
                 break;
             case ProcessResult::Continue:
                 EmplaceResponse(std::move(pp), ctx);
                 break;
         }
     }
-    TryAppendHeadWithHeartbeat(request, ctx, sourceIdBatch, parameters);
-    EndAppendHeadWithNewWrites(ctx, parameters);
+    TryAppendHeadWithHeartbeat(request, ctx, *writeCtx.SourceIdBatch, *writeCtx.Parameters);
+    EndAppendHeadWithNewWrites(ctx, *writeCtx.Parameters);
 
-    return parameters.HeadCleared;
+    return writeCtx.Parameters->HeadCleared;
 }
 
 
@@ -1439,7 +1439,7 @@ void TPartition::Handle(TEvPQ::TEvQuotaDeadlineCheck::TPtr&, const TActorContext
     FilterDeadlinedWrites(ctx);
 }
 
-bool TPartition::ProcessWrites(TEvKeyValue::TEvRequest* request, TInstant, const TActorContext& ctx) {
+bool TPartition::ProcessWrites(TEvKeyValue::TEvRequest* request, TKvWriteContext& writeCtx, const TActorContext& ctx) {
     PQ_LOG_T("TPartition::ProcessWrites.");
     FilterDeadlinedWrites(ctx);
 
@@ -1458,10 +1458,10 @@ bool TPartition::ProcessWrites(TEvKeyValue::TEvRequest* request, TInstant, const
     Y_ABORT_UNLESS(request->Record.CmdRenameSize() == 0);
     Y_ABORT_UNLESS(request->Record.CmdDeleteRangeSize() == 0);
 
-    auto sourceIdBatch = SourceManager.CreateModificationBatch(ctx);
+    writeCtx.SourceIdBatch.ConstructInPlace(SourceManager.CreateModificationBatch(ctx));
 
-    bool headCleared = AppendHeadWithNewWrites(request, ctx, sourceIdBatch);
-    if (headCleared) {
+    writeCtx.HeadCleared = AppendHeadWithNewWrites(request, ctx, writeCtx);
+    if (writeCtx.HeadCleared) {
         Y_ABORT_UNLESS(!CompactedKeys.empty() || Head.PackedSize == 0);
         for (ui32 i = 0; i < TotalLevels; ++i) {
             DataKeysHead[i].Clear();
@@ -1469,19 +1469,19 @@ bool TPartition::ProcessWrites(TEvKeyValue::TEvRequest* request, TInstant, const
     }
 
     if (NewHead.PackedSize == 0) { //nothing added to head - just compaction or tmp part blobs writed
-        if (!sourceIdBatch.HasModifications()) {
+        if (!writeCtx.SourceIdBatch->HasModifications()) {
             return request->Record.CmdWriteSize() > 0
                 || request->Record.CmdRenameSize() > 0
                 || request->Record.CmdDeleteRangeSize() > 0;
         } else {
-            sourceIdBatch.FillRequest(request);
+            writeCtx.SourceIdBatch->FillRequest(request);
             return true;
         }
     }
 
-    sourceIdBatch.FillRequest(request);
+    writeCtx.SourceIdBatch->FillRequest(request);
 
-    std::pair<TKey, ui32> res = GetNewWriteKey(headCleared);
+    std::pair<TKey, ui32> res = GetNewWriteKey(writeCtx.HeadCleared);
     const auto& key = res.first;
 
     LOG_DEBUG_S(
@@ -1492,7 +1492,7 @@ bool TPartition::ProcessWrites(TEvKeyValue::TEvRequest* request, TInstant, const
                 << NewHead.GetNextOffset() << " " << key.ToString()
                 << " size " << res.second << " WTime " << ctx.Now().MilliSeconds()
     );
-    AddNewWriteBlob(res, request, headCleared, ctx);
+    AddNewWriteBlob(res, request, writeCtx.HeadCleared, ctx);
     return true;
 }
 
@@ -1549,29 +1549,30 @@ void TPartition::HandleWrites(const TActorContext& ctx) {
     PQ_LOG_T("TPartition::HandleWrites. Requests.size()=" << Requests.size());
     Become(&TThis::StateWrite);
 
+    TKvWriteContext writeCtx;
     THolder<TEvKeyValue::TEvRequest> request(new TEvKeyValue::TEvRequest);
 
     Y_ABORT_UNLESS(Head.PackedSize + NewHead.PackedSize <= 2 * MaxSizeCheck);
 
-    TInstant now = ctx.Now();
-    WriteCycleStartTime = now;
+    writeCtx.Now = ctx.Now();
+    WriteCycleStartTime = writeCtx.Now;
 
-    bool haveData = false;
-    bool haveCheckDisk = false;
+    writeCtx.HaveData = false;
+    writeCtx.HaveCheckDisk = false;
 
     if (!Requests.empty() && DiskIsFull) {
         CancelAllWritesOnIdle(ctx);
         AddCheckDiskRequest(request.Get(), NumChannels);
-        haveCheckDisk = true;
+        writeCtx.HaveCheckDisk = true;
     } else {
-        haveData = ProcessWrites(request.Get(), now, ctx);
+        writeCtx.HaveData = ProcessWrites(request.Get(), writeCtx, ctx);
     }
-    bool haveDrop = CleanUp(request.Get(), ctx);
+    writeCtx.HaveDrop = CleanUp(request.Get(), ctx);
 
     ProcessReserveRequests(ctx);
-    if (!haveData && !haveDrop && !haveCheckDisk) { //no data writed/deleted
+    if (!writeCtx.HaveData && !writeCtx.HaveDrop && !writeCtx.HaveCheckDisk) { //no data writed/deleted
         if (!Requests.empty()) { //there could be change ownership requests that
-            bool res = ProcessWrites(request.Get(), now, ctx);
+            bool res = ProcessWrites(request.Get(), writeCtx, ctx);
             Y_ABORT_UNLESS(!res);
         }
         Y_ABORT_UNLESS(Requests.empty()

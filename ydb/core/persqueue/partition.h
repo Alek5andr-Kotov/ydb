@@ -212,15 +212,12 @@ private:
     void UpdateWriteBufferIsFullState(const TInstant& now);
 
     TInstant GetWriteTimeEstimate(ui64 offset) const;
-    bool AppendHeadWithNewWrites(TEvKeyValue::TEvRequest* request, const TActorContext& ctx,
-                                 TPartitionSourceManager::TModificationBatch& sourceIdBatch);
     bool CleanUp(TEvKeyValue::TEvRequest* request, const TActorContext& ctx);
 
     // Removes blobs that are no longer required. Blobs are no longer required if the storage time of all messages
     // stored in this blob has expired and they have been read by all important consumers.
     bool CleanUpBlobs(TEvKeyValue::TEvRequest *request, const TActorContext& ctx);
     bool IsQuotingEnabled() const;
-    bool ProcessWrites(TEvKeyValue::TEvRequest* request, TInstant now, const TActorContext& ctx);
     bool WaitingForPreviousBlobQuota() const;
     bool WaitingForSubDomainQuota(const TActorContext& ctx, const ui64 withSize = 0) const;
     size_t GetQuotaRequestSize(const TEvKeyValue::TEvRequest& request);
@@ -581,6 +578,24 @@ private:
     ProcessResult ProcessRequest(TSplitMessageGroupMsg& msg, ProcessParameters& parameters);
     ProcessResult ProcessRequest(TWriteMsg& msg, ProcessParameters& parameters, TEvKeyValue::TEvRequest* request, const TActorContext& ctx);
 
+    struct TKvWriteContext {
+        // HandleWrites
+        TInstant Now;
+        bool HaveData = false;
+        bool HaveCheckDisk = false;
+        bool HaveDrop = false;
+
+        // ProcessWrites
+        TMaybe<TPartitionSourceManager::TModificationBatch> SourceIdBatch;
+        bool HeadCleared = false;
+
+        // AppendHeadWithNewWrites
+        TMaybe<ProcessParameters> Parameters;
+        bool Run = false;
+    };
+
+    bool AppendHeadWithNewWrites(TEvKeyValue::TEvRequest* request, const TActorContext& ctx,
+                                 TKvWriteContext& writeCtx);
     void BeginAppendHeadWithNewWrites(const TActorContext& ctx,
                                       ProcessParameters& parameters);
     ProcessResult AppendHeadWithNewWrite(TEvKeyValue::TEvRequest* request, const TActorContext& ctx,
@@ -592,6 +607,8 @@ private:
                                     ProcessParameters& parameters);
     void EndAppendHeadWithNewWrites(const TActorContext& ctx,
                                     const ProcessParameters& parameters);
+
+    bool ProcessWrites(TEvKeyValue::TEvRequest* request, TKvWriteContext& writeCtx, const TActorContext& ctx);
 
 private:
     ui64 TabletID;

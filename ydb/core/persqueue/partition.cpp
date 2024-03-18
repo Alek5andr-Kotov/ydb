@@ -391,8 +391,9 @@ bool TPartition::CleanUp(TEvKeyValue::TEvRequest* request, const TActorContext& 
 }
 
 bool TPartition::CleanUpBlobs(TEvKeyValue::TEvRequest *request, const TActorContext& ctx) {
-    if (StartOffset == EndOffset || DataKeysBody.size() <= 1)
+    if (StartOffset == EndOffset || DataKeysBody.size() <= 1) {
         return false;
+    }
 
     const auto& partConfig = Config.GetPartitionConfig();
     const TDuration lifetimeLimit{TDuration::Seconds(partConfig.GetLifetimeSeconds())};
@@ -439,8 +440,9 @@ bool TPartition::CleanUpBlobs(TEvKeyValue::TEvRequest *request, const TActorCont
 
     Y_ABORT_UNLESS(!DataKeysBody.empty());
 
-    if (!hasDrop)
+    if (!hasDrop) {
         return false;
+    }
 
     const auto& lastKey = DataKeysBody.front().Key;
 
