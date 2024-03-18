@@ -1191,7 +1191,7 @@ bool TPartition::AppendHeadWithNewWrites(TEvKeyValue::TEvRequest* request, const
 
     bool run = true;
     while (run && !Requests.empty() && WriteCycleSize < MAX_WRITE_CYCLE_SIZE) { //head is not too big
-        auto pp = Requests.front();
+        auto pp = std::move(Requests.front());
         Requests.pop_front();
 
         ProcessResult result = ProcessResult::Continue;
@@ -1211,7 +1211,7 @@ bool TPartition::AppendHeadWithNewWrites(TEvKeyValue::TEvRequest* request, const
             case ProcessResult::Abort:
                 return false;
             case ProcessResult::Break:
-                Requests.push_front(pp);
+                Requests.push_front(std::move(pp));
                 run = false;
                 break;
             case ProcessResult::Continue:
@@ -1425,8 +1425,9 @@ bool TPartition::ProcessWrites(TEvKeyValue::TEvRequest* request, TInstant, const
     Y_ABORT_UNLESS(!PendingWriteRequest);
     QuotaDeadline = TInstant::Zero();
 
-    if (Requests.empty())
+    if (Requests.empty()) {
         return false;
+    }
 
     Y_ABORT_UNLESS(request->Record.CmdWriteSize() == 0);
     Y_ABORT_UNLESS(request->Record.CmdRenameSize() == 0);
@@ -1497,25 +1498,25 @@ void TPartition::FilterDeadlinedWrites(const TActorContext& ctx) {
     UpdateWriteBufferIsFullState(ctx.Now());
 }
 
-
 void TPartition::HandleWrites(const TActorContext& ctx) {
     if (!CanWrite()) {
-        if (CanEnqueue()) {
-            return;
-        } else {
+        if (!CanEnqueue()) {
             for(const auto& r : ReserveRequests) {
                 ReplyError(ctx, r->Cookie, InactivePartitionErrorCode,
                     TStringBuilder() << "Write to inactive partition");
             }
             ReserveRequests.clear();
+
             for(const auto& r : Requests) {
                 ReplyError(ctx, r.GetCookie(), InactivePartitionErrorCode,
                     TStringBuilder() << "Write to inactive partition");
             }
             Requests.clear();
-            return;
         }
+
+        return;
     }
+
     if (PendingWriteRequest) {
         return;
     }

@@ -1584,6 +1584,15 @@ void TPartition::RemoveDistrTx()
     PendingPartitionConfig = nullptr;
 }
 
+bool TPartition::ProcessUserActionOrTransaction(const TMessage& message,
+                                                const TActorContext& ctx)
+{
+    Y_UNUSED(message);
+    Y_UNUSED(ctx);
+
+    Y_ABORT_UNLESS(false);
+}
+
 bool TPartition::ProcessUserActionOrTransaction(TTransaction& t,
                                                 const TActorContext& ctx)
 {
@@ -2583,8 +2592,9 @@ void TPartition::Handle(TEvPQ::TEvApproveWriteQuota::TPtr& ev, const TActorConte
         TopicWriteQuotaWaitCounter->IncFor(TopicQuotaWaitTimeForCurrentBlob.MilliSeconds());
     }
 
-    if (CurrentStateFunc() == &TThis::StateIdle)
+    if (CurrentStateFunc() == &TThis::StateIdle) {
         HandleWrites(ctx);
+    }
 }
 
 void TPartition::Handle(NReadQuoterEvents::TEvQuotaCountersUpdated::TPtr& ev, const TActorContext& ctx) {

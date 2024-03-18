@@ -331,7 +331,7 @@ private:
     template <typename T>
     void EmplaceRequest(T&& body, const TActorContext& ctx) {
         const auto now = ctx.Now();
-        Requests.emplace_back(body, now - TInstant::Zero());
+        Requests.emplace_back(std::forward<T>(body), now - TInstant::Zero());
     }
     void EmplaceResponse(TMessage&& message, const TActorContext& ctx);
 
@@ -453,6 +453,7 @@ private:
         switch (ev->GetTypeRewrite()) {
             CFunc(TEvents::TSystem::Wakeup, HandleWakeup);
             HFuncTraced(TEvKeyValue::TEvResponse, Handle);
+
             HFuncTraced(TEvPQ::TEvBlobResponse, Handle);
             HFuncTraced(TEvPQ::TEvWrite, HandleOnIdle);
             HFuncTraced(TEvPQ::TEvRead, Handle);
@@ -473,10 +474,10 @@ private:
             HFuncTraced(TEvPQ::TEvMirrorerCounters, Handle);
             HFuncTraced(TEvPQ::TEvProxyResponse, Handle);
             HFuncTraced(TEvPQ::TEvError, Handle);
-            HFuncTraced(TEvPQ::TEvGetPartitionClientInfo, Handle);
-            HFuncTraced(TEvPQ::TEvUpdateAvailableSize, HandleOnIdle);
             HFuncTraced(TEvPQ::TEvReserveBytes, Handle);
+            HFuncTraced(TEvPQ::TEvGetPartitionClientInfo, Handle);
             HFuncTraced(TEvPQ::TEvPipeDisconnected, Handle);
+            HFuncTraced(TEvPQ::TEvUpdateAvailableSize, HandleOnIdle);
             HFuncTraced(TEvPQ::TEvApproveWriteQuota, Handle);
             HFuncTraced(TEvPQ::TEvQuotaDeadlineCheck, Handle);
             HFuncTraced(TEvPQ::TEvRegisterMessageGroup, HandleOnIdle);
@@ -518,6 +519,7 @@ private:
             HFuncTraced(TEvents::TEvPoisonPill, Handle);
             HFuncTraced(TEvPQ::TEvMonRequest, HandleMonitoring);
             HFuncTraced(TEvPQ::TEvGetMaxSeqNoRequest, Handle);
+            HFuncTraced(TEvPQ::TEvChangePartitionConfig, Handle);
             HFuncTraced(TEvPQ::TEvGetClientOffset, Handle);
             HFuncTraced(TEvPQ::TEvUpdateWriteTimestamp, Handle);
             HFuncTraced(TEvPQ::TEvSetClientInfo, Handle);
@@ -525,7 +527,6 @@ private:
             HFuncTraced(TEvPQ::TEvPartitionStatus, Handle);
             HFuncTraced(TEvPersQueue::TEvReportPartitionError, Handle);
             HFuncTraced(TEvPQ::TEvChangeOwner, Handle);
-            HFuncTraced(TEvPQ::TEvChangePartitionConfig, Handle);
             HFuncTraced(TEvPersQueue::TEvHasDataInfo, Handle);
             HFuncTraced(TEvPQ::TEvMirrorerCounters, Handle);
             HFuncTraced(TEvPQ::TEvProxyResponse, Handle);
@@ -534,8 +535,8 @@ private:
             HFuncTraced(TEvPQ::TEvGetPartitionClientInfo, Handle);
             HFuncTraced(TEvPQ::TEvPipeDisconnected, Handle);
             HFuncTraced(TEvPQ::TEvUpdateAvailableSize, HandleOnWrite);
-            HFuncTraced(TEvPQ::TEvQuotaDeadlineCheck, Handle);
             HFuncTraced(TEvPQ::TEvApproveWriteQuota, Handle);
+            HFuncTraced(TEvPQ::TEvQuotaDeadlineCheck, Handle);
             HFuncTraced(TEvPQ::TEvRegisterMessageGroup, HandleOnWrite);
             HFuncTraced(TEvPQ::TEvDeregisterMessageGroup, HandleOnWrite);
             HFuncTraced(TEvPQ::TEvSplitMessageGroup, HandleOnWrite);
@@ -617,6 +618,8 @@ private:
 
     std::deque<TMessage> Requests;
     std::deque<TMessage> Responses;
+    std::queue<TMessage> PendingRequests; // requests waiting for write quotas
+    bool WaitingForWriteQuotaToBeApproved = false;
 
     THead Head;
     THead NewHead;
@@ -648,6 +651,7 @@ private:
     bool ProcessUserActionOrTransaction(TEvPQ::TEvSetClientInfo& event, const TActorContext& ctx);
     bool ProcessUserActionOrTransaction(const TEvPersQueue::TEvProposeTransaction& event, const TActorContext& ctx);
     bool ProcessUserActionOrTransaction(TTransaction& tx, const TActorContext& ctx);
+    bool ProcessUserActionOrTransaction(const TMessage& message, const TActorContext& ctx);
 
     //
     // user actions and transactions
@@ -655,7 +659,8 @@ private:
     using TUserActionAndTransactionEvent =
         std::variant<TSimpleSharedPtr<TEvPQ::TEvSetClientInfo>,             // user actions
                      TSimpleSharedPtr<TEvPersQueue::TEvProposeTransaction>, // immediate transaction
-                     TSimpleSharedPtr<TTransaction>>;                       // distributed transaction or update config
+                     TSimpleSharedPtr<TTransaction>,                        // distributed transaction or update config
+                     TSimpleSharedPtr<TMessage>>;
     std::deque<TUserActionAndTransactionEvent> UserActionAndTransactionEvents;
     size_t ImmediateTxCount = 0;
     THashMap<TString, size_t> UserActCount;
