@@ -609,6 +609,8 @@ private:
                                     const ProcessParameters& parameters);
 
     bool ProcessWrites(TEvKeyValue::TEvRequest* request, TKvWriteContext& writeCtx, const TActorContext& ctx);
+    bool BeginProcessWrites(TEvKeyValue::TEvRequest* request, TKvWriteContext& writeCtx, const TActorContext& ctx);
+    bool EndProcessWrites(TEvKeyValue::TEvRequest* request, TKvWriteContext& writeCtx, const TActorContext& ctx);
 
 private:
     ui64 TabletID;

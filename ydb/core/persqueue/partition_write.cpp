@@ -1439,8 +1439,8 @@ void TPartition::Handle(TEvPQ::TEvQuotaDeadlineCheck::TPtr&, const TActorContext
     FilterDeadlinedWrites(ctx);
 }
 
-bool TPartition::ProcessWrites(TEvKeyValue::TEvRequest* request, TKvWriteContext& writeCtx, const TActorContext& ctx) {
-    PQ_LOG_T("TPartition::ProcessWrites.");
+bool TPartition::BeginProcessWrites(TEvKeyValue::TEvRequest* request, TKvWriteContext& writeCtx, const TActorContext& ctx)
+{
     FilterDeadlinedWrites(ctx);
 
     if (WaitingForPreviousBlobQuota() || WaitingForSubDomainQuota(ctx)) { // Waiting for topic quota.
@@ -1460,7 +1460,11 @@ bool TPartition::ProcessWrites(TEvKeyValue::TEvRequest* request, TKvWriteContext
 
     writeCtx.SourceIdBatch.ConstructInPlace(SourceManager.CreateModificationBatch(ctx));
 
-    writeCtx.HeadCleared = AppendHeadWithNewWrites(request, ctx, writeCtx);
+    return true;
+}
+
+bool TPartition::EndProcessWrites(TEvKeyValue::TEvRequest* request, TKvWriteContext& writeCtx, const TActorContext& ctx)
+{
     if (writeCtx.HeadCleared) {
         Y_ABORT_UNLESS(!CompactedKeys.empty() || Head.PackedSize == 0);
         for (ui32 i = 0; i < TotalLevels; ++i) {
@@ -1493,7 +1497,19 @@ bool TPartition::ProcessWrites(TEvKeyValue::TEvRequest* request, TKvWriteContext
                 << " size " << res.second << " WTime " << ctx.Now().MilliSeconds()
     );
     AddNewWriteBlob(res, request, writeCtx.HeadCleared, ctx);
+
     return true;
+}
+
+bool TPartition::ProcessWrites(TEvKeyValue::TEvRequest* request, TKvWriteContext& writeCtx, const TActorContext& ctx) {
+    PQ_LOG_T("TPartition::ProcessWrites.");
+    if (!BeginProcessWrites(request, writeCtx, ctx)) {
+        return false;
+    }
+
+    writeCtx.HeadCleared = AppendHeadWithNewWrites(request, ctx, writeCtx);
+
+    return EndProcessWrites(request, writeCtx, ctx);
 }
 
 void TPartition::FilterDeadlinedWrites(const TActorContext& ctx) {
