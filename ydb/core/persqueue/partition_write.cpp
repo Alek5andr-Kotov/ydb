@@ -1502,16 +1502,51 @@ bool TPartition::EndProcessWrites(TEvKeyValue::TEvRequest* request, TKvWriteCont
     return true;
 }
 
-bool TPartition::ProcessWrites(TEvKeyValue::TEvRequest* request, TKvWriteContext& writeCtx, const TActorContext& ctx)
+void TPartition::ProcessWrites(TEvKeyValue::TEvRequest* request, TKvWriteContext& writeCtx, const TActorContext& ctx)
 {
-    PQ_LOG_T("TPartition::ProcessWrites.");
-    if (!BeginProcessWrites(request, writeCtx, ctx)) {
-        return false;
+    enum EState {
+        PreAppendHeadWithNewWrites = 0,
+        InvokeAppendHeadWithNewWrites,
+        PostAppendHeadWithNewWrites,
+        Return
+    };
+
+    for (EState state = PreAppendHeadWithNewWrites; state != Return; ) {
+        switch (state) {
+        case PreAppendHeadWithNewWrites: {
+            PQ_LOG_T("TPartition::ProcessWrites.");
+            if (!BeginProcessWrites(request, writeCtx, ctx)) {
+                writeCtx.ProcessWrites = false;
+                state = Return;
+            } else {
+                state = InvokeAppendHeadWithNewWrites;
+            }
+            break;
+        }
+        case InvokeAppendHeadWithNewWrites: {
+            writeCtx.HeadCleared = AppendHeadWithNewWrites(request, ctx, writeCtx);
+            state = PostAppendHeadWithNewWrites;
+            break;
+        }
+        case PostAppendHeadWithNewWrites: {
+            writeCtx.ProcessWrites = EndProcessWrites(request, writeCtx, ctx);
+            state = Return;
+            break;
+        }
+        case Return: {
+            Y_ABORT_UNLESS(false);
+        }
+        }
     }
 
-    writeCtx.HeadCleared = AppendHeadWithNewWrites(request, ctx, writeCtx);
-
-    return EndProcessWrites(request, writeCtx, ctx);
+//    PQ_LOG_T("TPartition::ProcessWrites.");
+//    if (!BeginProcessWrites(request, writeCtx, ctx)) {
+//        return false;
+//    }
+//
+//    writeCtx.HeadCleared = AppendHeadWithNewWrites(request, ctx, writeCtx);
+//
+//    return EndProcessWrites(request, writeCtx, ctx);
 }
 
 void TPartition::FilterDeadlinedWrites(const TActorContext& ctx) {
@@ -1603,6 +1638,7 @@ void TPartition::HandleWrites(TEvKeyValue::TEvRequest* request, TKvWriteContext&
             writeCtx.HaveData = false;
             writeCtx.HaveCheckDisk = false;
 
+            // обработка TEvWrite зависит от DiskIsFull
             if (!Requests.empty() && DiskIsFull) {
                 CancelAllWritesOnIdle(ctx);
                 AddCheckDiskRequest(request, NumChannels);
@@ -1616,7 +1652,8 @@ void TPartition::HandleWrites(TEvKeyValue::TEvRequest* request, TKvWriteContext&
             break;
         }
         case InvokeProcessWrites1: {
-            writeCtx.HaveData = ProcessWrites(request, writeCtx, ctx);
+            ProcessWrites(request, writeCtx, ctx);
+            writeCtx.HaveData = writeCtx.ProcessWrites;
 
             state = PostProcessWrites1;
             break;
@@ -1638,8 +1675,8 @@ void TPartition::HandleWrites(TEvKeyValue::TEvRequest* request, TKvWriteContext&
             break;
         }
         case InvokeProcessWrites2: {
-            bool res = ProcessWrites(request, writeCtx, ctx);
-            Y_ABORT_UNLESS(!res);
+            ProcessWrites(request, writeCtx, ctx);
+            Y_ABORT_UNLESS(!writeCtx.ProcessWrites);
             state = PostProcessWrites2;
             break;
         }

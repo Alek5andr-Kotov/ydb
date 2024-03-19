@@ -587,6 +587,7 @@ private:
         bool HaveDrop = false;
 
         // ProcessWrites
+        bool ProcessWrites = false;
         TMaybe<TPartitionSourceManager::TModificationBatch> SourceIdBatch;
         bool HeadCleared = false;
 
@@ -609,7 +610,7 @@ private:
     void EndAppendHeadWithNewWrites(const TActorContext& ctx,
                                     const ProcessParameters& parameters);
 
-    bool ProcessWrites(TEvKeyValue::TEvRequest* request, TKvWriteContext& writeCtx, const TActorContext& ctx);
+    void ProcessWrites(TEvKeyValue::TEvRequest* request, TKvWriteContext& writeCtx, const TActorContext& ctx);
     bool BeginProcessWrites(TEvKeyValue::TEvRequest* request, TKvWriteContext& writeCtx, const TActorContext& ctx);
     bool EndProcessWrites(TEvKeyValue::TEvRequest* request, TKvWriteContext& writeCtx, const TActorContext& ctx);
 
