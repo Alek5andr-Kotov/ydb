@@ -1260,28 +1260,49 @@ void TPartition::EndAppendHeadWithNewWrites(const TActorContext& ctx,
     MaxWriteResponsesSize = Max<ui32>(MaxWriteResponsesSize, Responses.size());
 }
 
-bool TPartition::AppendHeadWithNewWrites(TEvKeyValue::TEvRequest* request, const TActorContext& ctx,
+void TPartition::AppendHeadWithNewWrites(TEvKeyValue::TEvRequest* request, const TActorContext& ctx,
                                          TKvWriteContext& writeCtx)
 {
+    enum EState {
+        PreAppendHeadWithNewWrite = 0,
+        InvokeAppendHeadWithNewWrite,
+        PostAppendHeadWithNewWrite,
+        Return
+    };
+
     PQ_LOG_T("TPartition::AppendHeadWithNewWrites.");
 
-    writeCtx.Parameters.ConstructInPlace(*writeCtx.SourceIdBatch);
+    for (EState state = PreAppendHeadWithNewWrite; state != Return; ) {
+        switch (state) {
+        case PreAppendHeadWithNewWrite: {
+            writeCtx.Parameters.ConstructInPlace(*writeCtx.SourceIdBatch);
 
-    BeginAppendHeadWithNewWrites(ctx, *writeCtx.Parameters);
+            BeginAppendHeadWithNewWrites(ctx, *writeCtx.Parameters);
 
 
-    //TODO: Process here not TClientBlobs, but also TBatches from LB(LB got them from pushclient too)
-    //Process is following: if batch contains already written messages or only one client message part -> unpack it and process as several TClientBlobs
-    //otherwise write this batch as is to head;
+            //TODO: Process here not TClientBlobs, but also TBatches from LB(LB got them from pushclient too)
+            //Process is following: if batch contains already written messages or only one client message part -> unpack it and process as several TClientBlobs
+            //otherwise write this batch as is to head;
 
-    writeCtx.Run = true;
-    while (writeCtx.Run && !Requests.empty() && WriteCycleSize < MAX_WRITE_CYCLE_SIZE) { //head is not too big
-        auto pp = std::move(Requests.front());
-        Requests.pop_front();
+            writeCtx.Run = true;
 
-        switch (AppendHeadWithNewWrite(request, ctx, *writeCtx.Parameters, pp)) {
+            if (writeCtx.Run && !Requests.empty() && WriteCycleSize < MAX_WRITE_CYCLE_SIZE) {
+                state = InvokeAppendHeadWithNewWrite;
+            } else {
+                state = PostAppendHeadWithNewWrite;
+            }
+
+            break;
+        }
+        case InvokeAppendHeadWithNewWrite: {
+            auto pp = std::move(Requests.front());
+            Requests.pop_front();
+
+            switch (AppendHeadWithNewWrite(request, ctx, *writeCtx.Parameters, pp)) {
             case EProcessResult::Abort:
-                return false;
+                writeCtx.AppendHeadWithNewWrites = false;
+                state = Return;
+                break;
             case EProcessResult::Break:
                 Requests.push_front(std::move(pp));
                 writeCtx.Run = false;
@@ -1289,14 +1310,64 @@ bool TPartition::AppendHeadWithNewWrites(TEvKeyValue::TEvRequest* request, const
             case EProcessResult::Continue:
                 EmplaceResponse(std::move(pp), ctx);
                 break;
+            }
+
+            if (state != Return) {
+                if (!writeCtx.Run || Requests.empty() || WriteCycleSize >= MAX_WRITE_CYCLE_SIZE) {
+                    state = PostAppendHeadWithNewWrite;
+                }
+            }
+
+            break;
+        }
+        case PostAppendHeadWithNewWrite: {
+            TryAppendHeadWithHeartbeat(request, ctx, *writeCtx.SourceIdBatch, *writeCtx.Parameters);
+            EndAppendHeadWithNewWrites(ctx, *writeCtx.Parameters);
+
+            writeCtx.AppendHeadWithNewWrites = writeCtx.Parameters->HeadCleared;
+
+            state = Return;
+
+            break;
+        }
+        case Return: {
+            Y_ABORT_UNLESS(false);
+        }
         }
     }
-    TryAppendHeadWithHeartbeat(request, ctx, *writeCtx.SourceIdBatch, *writeCtx.Parameters);
-    EndAppendHeadWithNewWrites(ctx, *writeCtx.Parameters);
 
-    return writeCtx.Parameters->HeadCleared;
+//    writeCtx.Parameters.ConstructInPlace(*writeCtx.SourceIdBatch);
+//
+//    BeginAppendHeadWithNewWrites(ctx, *writeCtx.Parameters);
+//
+//
+//    //TODO: Process here not TClientBlobs, but also TBatches from LB(LB got them from pushclient too)
+//    //Process is following: if batch contains already written messages or only one client message part -> unpack it and process as several TClientBlobs
+//    //otherwise write this batch as is to head;
+//
+//    writeCtx.Run = true;
+//    while (writeCtx.Run && !Requests.empty() && WriteCycleSize < MAX_WRITE_CYCLE_SIZE) { //head is not too big
+//        auto pp = std::move(Requests.front());
+//        Requests.pop_front();
+//
+//        switch (AppendHeadWithNewWrite(request, ctx, *writeCtx.Parameters, pp)) {
+//            case EProcessResult::Abort:
+//                writeCtx.AppendHeadWithNewWrites = false;
+//                return;
+//            case EProcessResult::Break:
+//                Requests.push_front(std::move(pp));
+//                writeCtx.Run = false;
+//                break;
+//            case EProcessResult::Continue:
+//                EmplaceResponse(std::move(pp), ctx);
+//                break;
+//        }
+//    }
+//    TryAppendHeadWithHeartbeat(request, ctx, *writeCtx.SourceIdBatch, *writeCtx.Parameters);
+//    EndAppendHeadWithNewWrites(ctx, *writeCtx.Parameters);
+//
+//    writeCtx.AppendHeadWithNewWrites = writeCtx.Parameters->HeadCleared;
 }
-
 
 std::pair<TKey, ui32> TPartition::GetNewWriteKey(bool headCleared) {
     bool needCompaction = false;
@@ -1524,7 +1595,8 @@ void TPartition::ProcessWrites(TEvKeyValue::TEvRequest* request, TKvWriteContext
             break;
         }
         case InvokeAppendHeadWithNewWrites: {
-            writeCtx.HeadCleared = AppendHeadWithNewWrites(request, ctx, writeCtx);
+            AppendHeadWithNewWrites(request, ctx, writeCtx);
+            writeCtx.HeadCleared = writeCtx.AppendHeadWithNewWrites;
             state = PostAppendHeadWithNewWrites;
             break;
         }

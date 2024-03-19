@@ -592,11 +592,12 @@ private:
         bool HeadCleared = false;
 
         // AppendHeadWithNewWrites
+        bool AppendHeadWithNewWrites = false;
         TMaybe<ProcessParameters> Parameters;
         bool Run = false;
     };
 
-    bool AppendHeadWithNewWrites(TEvKeyValue::TEvRequest* request, const TActorContext& ctx,
+    void AppendHeadWithNewWrites(TEvKeyValue::TEvRequest* request, const TActorContext& ctx,
                                  TKvWriteContext& writeCtx);
     void BeginAppendHeadWithNewWrites(const TActorContext& ctx,
                                       ProcessParameters& parameters);
