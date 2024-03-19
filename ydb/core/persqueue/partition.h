@@ -578,23 +578,71 @@ private:
     EProcessResult ProcessRequest(TSplitMessageGroupMsg& msg, ProcessParameters& parameters);
     EProcessResult ProcessRequest(TWriteMsg& msg, ProcessParameters& parameters, TEvKeyValue::TEvRequest* request, const TActorContext& ctx);
 
-    struct TKvWriteContext {
-        // HandleWrites
-        bool HandleWrites = false;
+    struct THandleWritesContext {
+        // current state
+        enum EState {
+            PreProcessWrites = 0,
+            InvokeProcessWrites1,
+            PostProcessWrites1,
+            InvokeProcessWrites2,
+            PostProcessWrites2,
+            Return
+        };
+
+        EState State = PreProcessWrites;
+
+        // locals
         TInstant Now;
         bool HaveData = false;
         bool HaveCheckDisk = false;
         bool HaveDrop = false;
 
-        // ProcessWrites
-        bool ProcessWrites = false;
+        // return
+        bool Result = false;
+    };
+
+    struct TProcessWritesContext {
+        // current state
+        enum EState {
+            PreAppendHeadWithNewWrites = 0,
+            InvokeAppendHeadWithNewWrites,
+            PostAppendHeadWithNewWrites,
+            Return
+        };
+
+        EState State = PreAppendHeadWithNewWrites;
+
+        // locals
         TMaybe<TPartitionSourceManager::TModificationBatch> SourceIdBatch;
         bool HeadCleared = false;
 
-        // AppendHeadWithNewWrites
-        bool AppendHeadWithNewWrites = false;
+        // return
+        bool Result = false;
+    };
+
+    struct TAppendHeadWithNewWritesContext {
+        // current state
+        enum EState {
+            PreAppendHeadWithNewWrite = 0,
+            InvokeAppendHeadWithNewWrite,
+            PostAppendHeadWithNewWrite,
+            Return
+        };
+
+        EState State = PreAppendHeadWithNewWrite;
+
+        // locals
         TMaybe<ProcessParameters> Parameters;
         bool Run = false;
+
+        // return
+        bool Result = false;
+    };
+
+    struct TKvWriteContext {
+        THandleWritesContext HandleWrites;
+        TProcessWritesContext ProcessWrites;
+        TAppendHeadWithNewWritesContext AppendHeadWithNewWrites;
     };
 
     void AppendHeadWithNewWrites(TEvKeyValue::TEvRequest* request, const TActorContext& ctx,

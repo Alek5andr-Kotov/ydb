@@ -1263,74 +1263,67 @@ void TPartition::EndAppendHeadWithNewWrites(const TActorContext& ctx,
 void TPartition::AppendHeadWithNewWrites(TEvKeyValue::TEvRequest* request, const TActorContext& ctx,
                                          TKvWriteContext& writeCtx)
 {
-    enum EState {
-        PreAppendHeadWithNewWrite = 0,
-        InvokeAppendHeadWithNewWrite,
-        PostAppendHeadWithNewWrite,
-        Return
-    };
-
     PQ_LOG_T("TPartition::AppendHeadWithNewWrites.");
 
-    for (EState state = PreAppendHeadWithNewWrite; state != Return; ) {
-        switch (state) {
-        case PreAppendHeadWithNewWrite: {
-            writeCtx.Parameters.ConstructInPlace(*writeCtx.SourceIdBatch);
+    for (writeCtx.AppendHeadWithNewWrites.State = TAppendHeadWithNewWritesContext::PreAppendHeadWithNewWrite; writeCtx.AppendHeadWithNewWrites.State != TAppendHeadWithNewWritesContext::Return; ) {
+        switch (writeCtx.AppendHeadWithNewWrites.State) {
+        case TAppendHeadWithNewWritesContext::PreAppendHeadWithNewWrite: {
+            writeCtx.AppendHeadWithNewWrites.Parameters.ConstructInPlace(*writeCtx.ProcessWrites.SourceIdBatch);
 
-            BeginAppendHeadWithNewWrites(ctx, *writeCtx.Parameters);
+            BeginAppendHeadWithNewWrites(ctx, *writeCtx.AppendHeadWithNewWrites.Parameters);
 
 
             //TODO: Process here not TClientBlobs, but also TBatches from LB(LB got them from pushclient too)
             //Process is following: if batch contains already written messages or only one client message part -> unpack it and process as several TClientBlobs
             //otherwise write this batch as is to head;
 
-            writeCtx.Run = true;
+            writeCtx.AppendHeadWithNewWrites.Run = true;
 
-            if (writeCtx.Run && !Requests.empty() && WriteCycleSize < MAX_WRITE_CYCLE_SIZE) {
-                state = InvokeAppendHeadWithNewWrite;
+            if (writeCtx.AppendHeadWithNewWrites.Run && !Requests.empty() && WriteCycleSize < MAX_WRITE_CYCLE_SIZE) {
+                writeCtx.AppendHeadWithNewWrites.State = TAppendHeadWithNewWritesContext::InvokeAppendHeadWithNewWrite;
             } else {
-                state = PostAppendHeadWithNewWrite;
+                writeCtx.AppendHeadWithNewWrites.State = TAppendHeadWithNewWritesContext::PostAppendHeadWithNewWrite;
             }
 
             break;
         }
-        case InvokeAppendHeadWithNewWrite: {
+        case TAppendHeadWithNewWritesContext::InvokeAppendHeadWithNewWrite: {
             auto pp = std::move(Requests.front());
             Requests.pop_front();
 
-            switch (AppendHeadWithNewWrite(request, ctx, *writeCtx.Parameters, pp)) {
+            switch (AppendHeadWithNewWrite(request, ctx, *writeCtx.AppendHeadWithNewWrites.Parameters, pp)) {
             case EProcessResult::Abort:
-                writeCtx.AppendHeadWithNewWrites = false;
-                state = Return;
+                writeCtx.AppendHeadWithNewWrites.Result = false;
+                writeCtx.AppendHeadWithNewWrites.State = TAppendHeadWithNewWritesContext::Return;
                 break;
             case EProcessResult::Break:
                 Requests.push_front(std::move(pp));
-                writeCtx.Run = false;
+                writeCtx.AppendHeadWithNewWrites.Run = false;
                 break;
             case EProcessResult::Continue:
                 EmplaceResponse(std::move(pp), ctx);
                 break;
             }
 
-            if (state != Return) {
-                if (!writeCtx.Run || Requests.empty() || WriteCycleSize >= MAX_WRITE_CYCLE_SIZE) {
-                    state = PostAppendHeadWithNewWrite;
+            if (writeCtx.AppendHeadWithNewWrites.State != TAppendHeadWithNewWritesContext::Return) {
+                if (!writeCtx.AppendHeadWithNewWrites.Run || Requests.empty() || WriteCycleSize >= MAX_WRITE_CYCLE_SIZE) {
+                    writeCtx.AppendHeadWithNewWrites.State = TAppendHeadWithNewWritesContext::PostAppendHeadWithNewWrite;
                 }
             }
 
             break;
         }
-        case PostAppendHeadWithNewWrite: {
-            TryAppendHeadWithHeartbeat(request, ctx, *writeCtx.SourceIdBatch, *writeCtx.Parameters);
-            EndAppendHeadWithNewWrites(ctx, *writeCtx.Parameters);
+        case TAppendHeadWithNewWritesContext::PostAppendHeadWithNewWrite: {
+            TryAppendHeadWithHeartbeat(request, ctx, *writeCtx.ProcessWrites.SourceIdBatch, *writeCtx.AppendHeadWithNewWrites.Parameters);
+            EndAppendHeadWithNewWrites(ctx, *writeCtx.AppendHeadWithNewWrites.Parameters);
 
-            writeCtx.AppendHeadWithNewWrites = writeCtx.Parameters->HeadCleared;
+            writeCtx.AppendHeadWithNewWrites.Result = writeCtx.AppendHeadWithNewWrites.Parameters->HeadCleared;
 
-            state = Return;
+            writeCtx.AppendHeadWithNewWrites.State = TAppendHeadWithNewWritesContext::Return;
 
             break;
         }
-        case Return: {
+        case TAppendHeadWithNewWritesContext::Return: {
             Y_ABORT_UNLESS(false);
         }
         }
@@ -1530,14 +1523,14 @@ bool TPartition::BeginProcessWrites(TEvKeyValue::TEvRequest* request, TKvWriteCo
     Y_ABORT_UNLESS(request->Record.CmdRenameSize() == 0);
     Y_ABORT_UNLESS(request->Record.CmdDeleteRangeSize() == 0);
 
-    writeCtx.SourceIdBatch.ConstructInPlace(SourceManager.CreateModificationBatch(ctx));
+    writeCtx.ProcessWrites.SourceIdBatch.ConstructInPlace(SourceManager.CreateModificationBatch(ctx));
 
     return true;
 }
 
 bool TPartition::EndProcessWrites(TEvKeyValue::TEvRequest* request, TKvWriteContext& writeCtx, const TActorContext& ctx)
 {
-    if (writeCtx.HeadCleared) {
+    if (writeCtx.ProcessWrites.HeadCleared) {
         Y_ABORT_UNLESS(!CompactedKeys.empty() || Head.PackedSize == 0);
         for (ui32 i = 0; i < TotalLevels; ++i) {
             DataKeysHead[i].Clear();
@@ -1545,19 +1538,19 @@ bool TPartition::EndProcessWrites(TEvKeyValue::TEvRequest* request, TKvWriteCont
     }
 
     if (NewHead.PackedSize == 0) { //nothing added to head - just compaction or tmp part blobs writed
-        if (!writeCtx.SourceIdBatch->HasModifications()) {
+        if (!writeCtx.ProcessWrites.SourceIdBatch->HasModifications()) {
             return request->Record.CmdWriteSize() > 0
                 || request->Record.CmdRenameSize() > 0
                 || request->Record.CmdDeleteRangeSize() > 0;
         } else {
-            writeCtx.SourceIdBatch->FillRequest(request);
+            writeCtx.ProcessWrites.SourceIdBatch->FillRequest(request);
             return true;
         }
     }
 
-    writeCtx.SourceIdBatch->FillRequest(request);
+    writeCtx.ProcessWrites.SourceIdBatch->FillRequest(request);
 
-    std::pair<TKey, ui32> res = GetNewWriteKey(writeCtx.HeadCleared);
+    std::pair<TKey, ui32> res = GetNewWriteKey(writeCtx.ProcessWrites.HeadCleared);
     const auto& key = res.first;
 
     LOG_DEBUG_S(
@@ -1568,44 +1561,37 @@ bool TPartition::EndProcessWrites(TEvKeyValue::TEvRequest* request, TKvWriteCont
                 << NewHead.GetNextOffset() << " " << key.ToString()
                 << " size " << res.second << " WTime " << ctx.Now().MilliSeconds()
     );
-    AddNewWriteBlob(res, request, writeCtx.HeadCleared, ctx);
+    AddNewWriteBlob(res, request, writeCtx.ProcessWrites.HeadCleared, ctx);
 
     return true;
 }
 
 void TPartition::ProcessWrites(TEvKeyValue::TEvRequest* request, TKvWriteContext& writeCtx, const TActorContext& ctx)
 {
-    enum EState {
-        PreAppendHeadWithNewWrites = 0,
-        InvokeAppendHeadWithNewWrites,
-        PostAppendHeadWithNewWrites,
-        Return
-    };
-
-    for (EState state = PreAppendHeadWithNewWrites; state != Return; ) {
-        switch (state) {
-        case PreAppendHeadWithNewWrites: {
+    for (writeCtx.ProcessWrites.State = TProcessWritesContext::PreAppendHeadWithNewWrites; writeCtx.ProcessWrites.State != TProcessWritesContext::Return; ) {
+        switch (writeCtx.ProcessWrites.State) {
+        case TProcessWritesContext::PreAppendHeadWithNewWrites: {
             PQ_LOG_T("TPartition::ProcessWrites.");
             if (!BeginProcessWrites(request, writeCtx, ctx)) {
-                writeCtx.ProcessWrites = false;
-                state = Return;
+                writeCtx.ProcessWrites.Result = false;
+                writeCtx.ProcessWrites.State = TProcessWritesContext::Return;
             } else {
-                state = InvokeAppendHeadWithNewWrites;
+                writeCtx.ProcessWrites.State = TProcessWritesContext::InvokeAppendHeadWithNewWrites;
             }
             break;
         }
-        case InvokeAppendHeadWithNewWrites: {
+        case TProcessWritesContext::InvokeAppendHeadWithNewWrites: {
             AppendHeadWithNewWrites(request, ctx, writeCtx);
-            writeCtx.HeadCleared = writeCtx.AppendHeadWithNewWrites;
-            state = PostAppendHeadWithNewWrites;
+            writeCtx.ProcessWrites.HeadCleared = writeCtx.AppendHeadWithNewWrites.Result;
+            writeCtx.ProcessWrites.State = TProcessWritesContext::PostAppendHeadWithNewWrites;
             break;
         }
-        case PostAppendHeadWithNewWrites: {
-            writeCtx.ProcessWrites = EndProcessWrites(request, writeCtx, ctx);
-            state = Return;
+        case TProcessWritesContext::PostAppendHeadWithNewWrites: {
+            writeCtx.ProcessWrites.Result = EndProcessWrites(request, writeCtx, ctx);
+            writeCtx.ProcessWrites.State = TProcessWritesContext::Return;
             break;
         }
-        case Return: {
+        case TProcessWritesContext::Return: {
             Y_ABORT_UNLESS(false);
         }
         }
@@ -1678,7 +1664,7 @@ void TPartition::HandleWrites(const TActorContext& ctx) {
     TKvWriteContext writeCtx;
 
     HandleWrites(request.Get(), writeCtx, ctx);
-    if (!writeCtx.HandleWrites) {
+    if (!writeCtx.HandleWrites.Result) {
         return;
     }
 
@@ -1692,77 +1678,68 @@ void TPartition::HandleWrites(TEvKeyValue::TEvRequest* request, TKvWriteContext&
 {
     Y_ABORT_UNLESS(Head.PackedSize + NewHead.PackedSize <= 2 * MaxSizeCheck);
 
-    enum EState {
-        PreProcessWrites = 0,
-        InvokeProcessWrites1,
-        PostProcessWrites1,
-        InvokeProcessWrites2,
-        PostProcessWrites2,
-        Return
-    };
+    for (writeCtx.HandleWrites.State = THandleWritesContext::PreProcessWrites; writeCtx.HandleWrites.State != THandleWritesContext::Return; ) {
+        switch (writeCtx.HandleWrites.State) {
+        case THandleWritesContext::PreProcessWrites: {
+            writeCtx.HandleWrites.Now = ctx.Now();
+            WriteCycleStartTime = writeCtx.HandleWrites.Now;
 
-    for (EState state = PreProcessWrites; state != Return; ) {
-        switch (state) {
-        case PreProcessWrites: {
-            writeCtx.Now = ctx.Now();
-            WriteCycleStartTime = writeCtx.Now;
-
-            writeCtx.HaveData = false;
-            writeCtx.HaveCheckDisk = false;
+            writeCtx.HandleWrites.HaveData = false;
+            writeCtx.HandleWrites.HaveCheckDisk = false;
 
             // обработка TEvWrite зависит от DiskIsFull
             if (!Requests.empty() && DiskIsFull) {
                 CancelAllWritesOnIdle(ctx);
                 AddCheckDiskRequest(request, NumChannels);
-                writeCtx.HaveCheckDisk = true;
+                writeCtx.HandleWrites.HaveCheckDisk = true;
 
-                state = PostProcessWrites1;
+                writeCtx.HandleWrites.State = THandleWritesContext::PostProcessWrites1;
             } else {
-                state = InvokeProcessWrites1;
+                writeCtx.HandleWrites.State = THandleWritesContext::InvokeProcessWrites1;
             }
 
             break;
         }
-        case InvokeProcessWrites1: {
+        case THandleWritesContext::InvokeProcessWrites1: {
             ProcessWrites(request, writeCtx, ctx);
-            writeCtx.HaveData = writeCtx.ProcessWrites;
+            writeCtx.HandleWrites.HaveData = writeCtx.ProcessWrites.Result;
 
-            state = PostProcessWrites1;
+            writeCtx.HandleWrites.State = THandleWritesContext::PostProcessWrites1;
             break;
         }
-        case PostProcessWrites1: {
-            writeCtx.HaveDrop = CleanUp(request, ctx);
+        case THandleWritesContext::PostProcessWrites1: {
+            writeCtx.HandleWrites.HaveDrop = CleanUp(request, ctx);
 
             ProcessReserveRequests(ctx);
-            if (!writeCtx.HaveData && !writeCtx.HaveDrop && !writeCtx.HaveCheckDisk) { //no data writed/deleted
+            if (!writeCtx.HandleWrites.HaveData && !writeCtx.HandleWrites.HaveDrop && !writeCtx.HandleWrites.HaveCheckDisk) { //no data writed/deleted
                 if (!Requests.empty()) { //there could be change ownership requests that
-                    state = InvokeProcessWrites2;
+                    writeCtx.HandleWrites.State = THandleWritesContext::InvokeProcessWrites2;
                 } else {
-                    state = PostProcessWrites2;
+                    writeCtx.HandleWrites.State = THandleWritesContext::PostProcessWrites2;
                 }
                 break;
             }
-            writeCtx.HandleWrites = true;
-            state = Return;
+            writeCtx.HandleWrites.Result = true;
+            writeCtx.HandleWrites.State = THandleWritesContext::Return;
             break;
         }
-        case InvokeProcessWrites2: {
+        case THandleWritesContext::InvokeProcessWrites2: {
             ProcessWrites(request, writeCtx, ctx);
-            Y_ABORT_UNLESS(!writeCtx.ProcessWrites);
-            state = PostProcessWrites2;
+            Y_ABORT_UNLESS(!writeCtx.ProcessWrites.Result);
+            writeCtx.HandleWrites.State = THandleWritesContext::PostProcessWrites2;
             break;
         }
-        case PostProcessWrites2: {
+        case THandleWritesContext::PostProcessWrites2: {
             Y_ABORT_UNLESS(Requests.empty()
                            || WaitingForPreviousBlobQuota()
                            || WaitingForSubDomainQuota(ctx)); //in this case all writes must be processed or no quota left
             AnswerCurrentWrites(ctx); //in case if all writes are already done - no answer will be called on kv write, no kv write at all
             BecomeIdle(ctx);
-            writeCtx.HandleWrites = false;
-            state = Return;
+            writeCtx.HandleWrites.Result = false;
+            writeCtx.HandleWrites.State = THandleWritesContext::Return;
             break;
         }
-        case Return: {
+        case THandleWritesContext::Return: {
             Y_ABORT_UNLESS(false);
         }
         }
