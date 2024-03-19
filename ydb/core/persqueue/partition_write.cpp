@@ -1022,8 +1022,9 @@ TPartition::EProcessResult TPartition::ProcessRequest(TWriteMsg& p, ProcessParam
         WriteNewSizeUncompressed += p.Msg.UncompressedSize + p.Msg.SourceId.size();
         if (p.Msg.PartNo == 0) {
              ++WriteNewMessages;
-             if (!p.Msg.External)
+             if (!p.Msg.External) {
                  ++WriteNewMessagesInternal;
+             }
         }
 
         TMaybe<TPartData> partData;
@@ -1567,8 +1568,10 @@ void TPartition::HandleWrites(const TActorContext& ctx) {
     Become(&TThis::StateWrite);
 
     THolder<TEvKeyValue::TEvRequest> request(new TEvKeyValue::TEvRequest);
+    TKvWriteContext writeCtx;
 
-    if (!HandleWrites(request.Get(), ctx)) {
+    HandleWrites(request.Get(), writeCtx, ctx);
+    if (!writeCtx.HandleWrites) {
         return;
     }
 
@@ -1578,42 +1581,118 @@ void TPartition::HandleWrites(const TActorContext& ctx) {
     RequestBlobQuota();
 }
 
-bool TPartition::HandleWrites(TEvKeyValue::TEvRequest* request, const TActorContext& ctx)
+void TPartition::HandleWrites(TEvKeyValue::TEvRequest* request, TKvWriteContext& writeCtx, const TActorContext& ctx)
 {
     Y_ABORT_UNLESS(Head.PackedSize + NewHead.PackedSize <= 2 * MaxSizeCheck);
 
-    TKvWriteContext writeCtx;
+    enum EState {
+        PreProcessWrites = 0,
+        InvokeProcessWrites1,
+        PostProcessWrites1,
+        InvokeProcessWrites2,
+        PostProcessWrites2,
+        Return
+    };
 
-    writeCtx.Now = ctx.Now();
-    WriteCycleStartTime = writeCtx.Now;
+    for (EState state = PreProcessWrites; state != Return; ) {
+        switch (state) {
+        case PreProcessWrites: {
+            writeCtx.Now = ctx.Now();
+            WriteCycleStartTime = writeCtx.Now;
 
-    writeCtx.HaveData = false;
-    writeCtx.HaveCheckDisk = false;
+            writeCtx.HaveData = false;
+            writeCtx.HaveCheckDisk = false;
 
-    if (!Requests.empty() && DiskIsFull) {
-        CancelAllWritesOnIdle(ctx);
-        AddCheckDiskRequest(request, NumChannels);
-        writeCtx.HaveCheckDisk = true;
-    } else {
-        writeCtx.HaveData = ProcessWrites(request, writeCtx, ctx);
-    }
-    writeCtx.HaveDrop = CleanUp(request, ctx);
+            if (!Requests.empty() && DiskIsFull) {
+                CancelAllWritesOnIdle(ctx);
+                AddCheckDiskRequest(request, NumChannels);
+                writeCtx.HaveCheckDisk = true;
 
-    ProcessReserveRequests(ctx);
-    if (!writeCtx.HaveData && !writeCtx.HaveDrop && !writeCtx.HaveCheckDisk) { //no data writed/deleted
-        if (!Requests.empty()) { //there could be change ownership requests that
+                state = PostProcessWrites1;
+            } else {
+                state = InvokeProcessWrites1;
+            }
+
+            break;
+        }
+        case InvokeProcessWrites1: {
+            writeCtx.HaveData = ProcessWrites(request, writeCtx, ctx);
+
+            state = PostProcessWrites1;
+            break;
+        }
+        case PostProcessWrites1: {
+            writeCtx.HaveDrop = CleanUp(request, ctx);
+
+            ProcessReserveRequests(ctx);
+            if (!writeCtx.HaveData && !writeCtx.HaveDrop && !writeCtx.HaveCheckDisk) { //no data writed/deleted
+                if (!Requests.empty()) { //there could be change ownership requests that
+                    state = InvokeProcessWrites2;
+                } else {
+                    state = PostProcessWrites2;
+                }
+                break;
+            }
+            writeCtx.HandleWrites = true;
+            state = Return;
+            break;
+        }
+        case InvokeProcessWrites2: {
             bool res = ProcessWrites(request, writeCtx, ctx);
             Y_ABORT_UNLESS(!res);
+            state = PostProcessWrites2;
+            break;
         }
-        Y_ABORT_UNLESS(Requests.empty()
-                    || WaitingForPreviousBlobQuota()
-                    || WaitingForSubDomainQuota(ctx)); //in this case all writes must be processed or no quota left
-        AnswerCurrentWrites(ctx); //in case if all writes are already done - no answer will be called on kv write, no kv write at all
-        BecomeIdle(ctx);
-        return false;
+        case PostProcessWrites2: {
+            Y_ABORT_UNLESS(Requests.empty()
+                           || WaitingForPreviousBlobQuota()
+                           || WaitingForSubDomainQuota(ctx)); //in this case all writes must be processed or no quota left
+            AnswerCurrentWrites(ctx); //in case if all writes are already done - no answer will be called on kv write, no kv write at all
+            BecomeIdle(ctx);
+            writeCtx.HandleWrites = false;
+            state = Return;
+            break;
+        }
+        case Return: {
+            Y_ABORT_UNLESS(false);
+        }
+        }
     }
 
-    return true;
+//    Y_ABORT_UNLESS(Head.PackedSize + NewHead.PackedSize <= 2 * MaxSizeCheck);
+//
+//    TKvWriteContext writeCtx;
+//
+//    writeCtx.Now = ctx.Now();
+//    WriteCycleStartTime = writeCtx.Now;
+//
+//    writeCtx.HaveData = false;
+//    writeCtx.HaveCheckDisk = false;
+//
+//    if (!Requests.empty() && DiskIsFull) {
+//        CancelAllWritesOnIdle(ctx);
+//        AddCheckDiskRequest(request, NumChannels);
+//        writeCtx.HaveCheckDisk = true;
+//    } else {
+//        writeCtx.HaveData = ProcessWrites(request, writeCtx, ctx);
+//    }
+//    writeCtx.HaveDrop = CleanUp(request, ctx);
+//
+//    ProcessReserveRequests(ctx);
+//    if (!writeCtx.HaveData && !writeCtx.HaveDrop && !writeCtx.HaveCheckDisk) { //no data writed/deleted
+//        if (!Requests.empty()) { //there could be change ownership requests that
+//            bool res = ProcessWrites(request, writeCtx, ctx);
+//            Y_ABORT_UNLESS(!res);
+//        }
+//        Y_ABORT_UNLESS(Requests.empty()
+//                    || WaitingForPreviousBlobQuota()
+//                    || WaitingForSubDomainQuota(ctx)); //in this case all writes must be processed or no quota left
+//        AnswerCurrentWrites(ctx); //in case if all writes are already done - no answer will be called on kv write, no kv write at all
+//        BecomeIdle(ctx);
+//        return false;
+//    }
+//
+//    return true;
 }
 
 void TPartition::RequestQuotaForWriteBlobRequest(size_t dataSize, ui64 cookie) {

@@ -580,6 +580,7 @@ private:
 
     struct TKvWriteContext {
         // HandleWrites
+        bool HandleWrites = false;
         TInstant Now;
         bool HaveData = false;
         bool HaveCheckDisk = false;
@@ -612,7 +613,7 @@ private:
     bool BeginProcessWrites(TEvKeyValue::TEvRequest* request, TKvWriteContext& writeCtx, const TActorContext& ctx);
     bool EndProcessWrites(TEvKeyValue::TEvRequest* request, TKvWriteContext& writeCtx, const TActorContext& ctx);
 
-    bool HandleWrites(TEvKeyValue::TEvRequest* request, const TActorContext& ctx);
+    void HandleWrites(TEvKeyValue::TEvRequest* request, TKvWriteContext& writeCtx, const TActorContext& ctx);
 
 private:
     ui64 TabletID;
