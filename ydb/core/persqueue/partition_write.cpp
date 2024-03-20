@@ -1578,17 +1578,22 @@ void TPartition::HandleWrites(const TActorContext& ctx) {
     RequestBlobQuota();
 }
 
+void TPartition::BeginHandleWrites(TKvWriteContext& writeCtx, const TActorContext& ctx)
+{
+    writeCtx.Now = ctx.Now();
+    WriteCycleStartTime = writeCtx.Now;
+
+    writeCtx.HaveData = false;
+    writeCtx.HaveCheckDisk = false;
+}
+
 bool TPartition::HandleWrites(TEvKeyValue::TEvRequest* request, const TActorContext& ctx)
 {
     Y_ABORT_UNLESS(Head.PackedSize + NewHead.PackedSize <= 2 * MaxSizeCheck);
 
     TKvWriteContext writeCtx;
 
-    writeCtx.Now = ctx.Now();
-    WriteCycleStartTime = writeCtx.Now;
-
-    writeCtx.HaveData = false;
-    writeCtx.HaveCheckDisk = false;
+    BeginHandleWrites(writeCtx, ctx);
 
     if (!Requests.empty() && DiskIsFull) {
         CancelAllWritesOnIdle(ctx);

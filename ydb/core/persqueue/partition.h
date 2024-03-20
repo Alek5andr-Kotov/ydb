@@ -612,6 +612,7 @@ private:
     bool BeginProcessWrites(TEvKeyValue::TEvRequest* request, TKvWriteContext& writeCtx, const TActorContext& ctx);
     bool EndProcessWrites(TEvKeyValue::TEvRequest* request, TKvWriteContext& writeCtx, const TActorContext& ctx);
 
+    void BeginHandleWrites(TKvWriteContext& writeCtx, const TActorContext& ctx);
     bool HandleWrites(TEvKeyValue::TEvRequest* request, const TActorContext& ctx);
 
 private:
