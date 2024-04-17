@@ -2,6 +2,7 @@
 
 #include "topic_workload_defines.h"
 #include "topic_workload_stats_collector.h"
+#include "topic_workload_reader_transaction_support.h"
 
 #include <ydb/public/sdk/cpp/client/ydb_topic/topic.h>
 
@@ -30,6 +31,10 @@ namespace NYdb {
             bool Direct;
             ui32 Codec = 0;
             bool UseTransactions = false;
+            bool UseTableSelect = false;
+            bool UseTableUpsert = false;
+            size_t CommitPeriod = 15;
+            size_t CommitMessages = 1'000'000;
         };
 
         class TTopicWorkloadWriterWorker {
@@ -42,7 +47,7 @@ namespace NYdb {
 
             void Close();
 
-            void Process();
+            void Process(std::optional<TTransactionSupport>& txSupport);
 
             void CreateWorker();
 
@@ -58,6 +63,12 @@ namespace NYdb {
             TString GetGeneratedMessage() const;
 
             TInstant GetCreateTimestamp() const;
+
+            void TryCommitTx(TTopicWorkloadWriterParams& params,
+                             std::optional<TTransactionSupport>& txSupport,
+                             TInstant& commitTime);
+            void TryCommitTableChanges(TTopicWorkloadWriterParams& params,
+                                       std::optional<TTransactionSupport>& txSupport);
 
             TTopicWorkloadWriterParams Params;
             ui64 MessageId = 0;
