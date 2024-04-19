@@ -1,6 +1,7 @@
 #include "topic_workload_reader_transaction_support.h"
 
 #include <util/random/random.h>
+#include <ydb/library/dbgtrace/debug_trace.h>
 
 namespace NYdb::NConsoleClient {
 

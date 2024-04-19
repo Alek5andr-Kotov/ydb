@@ -1,6 +1,7 @@
 #include "topic_workload_writer.h"
 
 #include <util/generic/overloaded.h>
+#include <ydb/library/dbgtrace/debug_trace.h>
 
 using namespace NYdb::NConsoleClient;
 
@@ -293,7 +294,7 @@ void TTopicWorkloadWriterWorker::TryCommitTableChanges(TTopicWorkloadWriterParam
 
     auto execTimes = txSupport->CommitTx(params.UseTableSelect, params.UseTableUpsert);
 
-    params.StatsCollector->AddSelectEvent(params.WriterIdx, {execTimes.SelectTime.MilliSeconds()});
-    params.StatsCollector->AddUpsertEvent(params.WriterIdx, {execTimes.UpsertTime.MilliSeconds()});
-    params.StatsCollector->AddCommitTxEvent(params.WriterIdx, {execTimes.CommitTime.MilliSeconds()});
+    params.StatsCollector->AddWriterSelectEvent(params.WriterIdx, {execTimes.SelectTime.MilliSeconds()});
+    params.StatsCollector->AddWriterUpsertEvent(params.WriterIdx, {execTimes.UpsertTime.MilliSeconds()});
+    params.StatsCollector->AddWriterCommitTxEvent(params.WriterIdx, {execTimes.CommitTime.MilliSeconds()});
 }
