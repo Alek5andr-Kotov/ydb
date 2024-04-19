@@ -1,7 +1,6 @@
 #include "topic_workload_writer.h"
 
 #include <util/generic/overloaded.h>
-#include <ydb/library/dbgtrace/debug_trace.h>
 
 using namespace NYdb::NConsoleClient;
 

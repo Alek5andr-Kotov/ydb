@@ -3,7 +3,6 @@
 #include "topic_workload_defines.h"
 
 #include "util/stream/format.h"
-#include <ydb/library/dbgtrace/debug_trace.h>
 
 using namespace NYdb::NConsoleClient;
 
