@@ -928,12 +928,10 @@ private:
         }
         }
 
-        auto issue = YqlIssue({}, issueCode);
-
         if (result.ErrorsSize()) {
-            ReplyErrorAndDie(statusCode, issue, result.GetErrors(0).GetReason());
+            ReplyErrorAndDie(statusCode, YqlIssue({}, issueCode, result.GetErrors(0).GetReason()));
         } else {
-            ReplyErrorAndDie(statusCode, issue);
+            ReplyErrorAndDie(statusCode, YqlIssue({}, issueCode));
         }
     }
 
