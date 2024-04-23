@@ -83,6 +83,7 @@ namespace NYdb {
 
             // SeqNo - CreateTime
             THashMap<ui64, TInstant> InflightMessages;
+            bool WaitForCommitTx = false;
         };
     }
 }

@@ -127,7 +127,7 @@ void TTopicWorkloadWriterWorker::Process() {
                 WRITE_LOG(Params.Log, ELogPriority::TLOG_DEBUG, TStringBuilder() << "Inflight size " << InflightMessages.size() << " writingAllowed " << writingAllowed);
             }
 
-            if (writingAllowed) 
+            if (writingAllowed && !WaitForCommitTx)
             {
                 TString data = GetGeneratedMessage();
 
@@ -162,8 +162,14 @@ void TTopicWorkloadWriterWorker::Process() {
                     TryCommitTx(Params, commitTime);
                 }
             }
-            else 
+            else
+            {
+                if (TxSupport) {
+                    TryCommitTx(Params, commitTime);
+                }
+
                 Sleep(TDuration::MilliSeconds(1));
+            }
 
             if (events.empty())
                 break;
@@ -277,9 +283,16 @@ void TTopicWorkloadWriterWorker::TryCommitTx(TTopicWorkloadWriterParams& params,
         return;
     }
 
+    if (!InflightMessages.empty()) {
+        WaitForCommitTx = true;
+        return;
+    }
+
     TryCommitTableChanges(params);
 
     commitTime += TDuration::Seconds(params.CommitPeriod);
+
+    WaitForCommitTx = false;
 }
 
 void TTopicWorkloadWriterWorker::TryCommitTableChanges(TTopicWorkloadWriterParams& params)
