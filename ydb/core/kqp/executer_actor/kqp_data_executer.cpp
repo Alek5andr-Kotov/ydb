@@ -929,7 +929,12 @@ private:
         }
 
         auto issue = YqlIssue({}, issueCode);
-        ReplyErrorAndDie(statusCode, issue);
+
+        if (result.ErrorsSize()) {
+            ReplyErrorAndDie(statusCode, issue, result.GetErrors(0).GetReason());
+        } else {
+            ReplyErrorAndDie(statusCode, issue);
+        }
     }
 
     void CheckPrepareCompleted() {
