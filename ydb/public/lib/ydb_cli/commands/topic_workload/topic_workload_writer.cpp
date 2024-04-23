@@ -79,7 +79,7 @@ bool TTopicWorkloadWriterWorker::WaitForInitSeqNo()
     return false;
 }
 
-void TTopicWorkloadWriterWorker::Process(std::optional<TTransactionSupport>& txSupport) {
+void TTopicWorkloadWriterWorker::Process() {
     Sleep(TDuration::Seconds((float)Params.WarmupSec * Params.WriterIdx / Params.ProducerThreadCount));
     
     const TInstant endTime = TInstant::Now() + TDuration::Seconds(Params.TotalSec);
@@ -137,29 +137,29 @@ void TTopicWorkloadWriterWorker::Process(std::optional<TTransactionSupport>& txS
 
                 BytesWritten += Params.MessageSize;
 
-                if (txSupport && !txSupport->Transaction) {
-                    txSupport->BeginTx();
+                if (TxSupport && !TxSupport->Transaction) {
+                    TxSupport->BeginTx();
                 }
 
                 NTopic::TWriteMessage writeMessage(data);
                 writeMessage.SeqNo(MessageId);
                 writeMessage.CreateTimestamp(createTimestamp);
-                if (txSupport) {
-                    writeMessage.Tx(*txSupport->Transaction);
+                if (TxSupport) {
+                    writeMessage.Tx(*TxSupport->Transaction);
                 }
 
                 WriteSession->Write(std::move(ContinuationToken.GetRef()), std::move(writeMessage));
 
-                if (txSupport) {
-                    txSupport->AppendRow("");
+                if (TxSupport) {
+                    TxSupport->AppendRow("");
                 }
 
                 WRITE_LOG(Params.Log, ELogPriority::TLOG_DEBUG, TStringBuilder() << "Written message " << MessageId << " CreateTimestamp " << createTimestamp << " delta from now " << (Params.ByteRate == 0 ? TDuration() : now - *createTimestamp.Get()));
                 ContinuationToken.Clear();
                 MessageId++;
 
-                if (txSupport) {
-                    TryCommitTx(Params, txSupport, commitTime);
+                if (TxSupport) {
+                    TryCommitTx(Params, commitTime);
                 }
             }
             else 
@@ -251,10 +251,9 @@ void TTopicWorkloadWriterWorker::CreateWorker() {
 
 void TTopicWorkloadWriterWorker::WriterLoop(TTopicWorkloadWriterParams& params) {
     TTopicWorkloadWriterWorker writer(std::move(params));
-    std::optional<TTransactionSupport> txSupport;
 
     if (params.UseTransactions) {
-        txSupport.emplace(params.Driver, "", "");
+        writer.TxSupport.emplace(params.Driver, "", "");
     }
 
     (*params.StartedCount)++;
@@ -264,34 +263,32 @@ void TTopicWorkloadWriterWorker::WriterLoop(TTopicWorkloadWriterParams& params) 
     if (!writer.WaitForInitSeqNo())
         return;
 
-    writer.Process(txSupport);
+    writer.Process();
 
     WRITE_LOG(params.Log, ELogPriority::TLOG_INFO, TStringBuilder() << "Writer finished " << Now().ToStringUpToSeconds());
 }
 
 void TTopicWorkloadWriterWorker::TryCommitTx(TTopicWorkloadWriterParams& params,
-                                             std::optional<TTransactionSupport>& txSupport,
                                              TInstant& commitTime)
 {
-    Y_ABORT_UNLESS(txSupport);
+    Y_ABORT_UNLESS(TxSupport);
 
-    if ((commitTime > Now()) && (params.CommitMessages > txSupport->Rows.size())) {
+    if ((commitTime > Now()) && (params.CommitMessages > TxSupport->Rows.size())) {
         return;
     }
 
-    TryCommitTableChanges(params, txSupport);
+    TryCommitTableChanges(params);
 
     commitTime += TDuration::Seconds(params.CommitPeriod);
 }
 
-void TTopicWorkloadWriterWorker::TryCommitTableChanges(TTopicWorkloadWriterParams& params,
-                                                       std::optional<TTransactionSupport>& txSupport)
+void TTopicWorkloadWriterWorker::TryCommitTableChanges(TTopicWorkloadWriterParams& params)
 {
-    if (txSupport->Rows.empty()) {
+    if (TxSupport->Rows.empty()) {
         return;
     }
 
-    auto execTimes = txSupport->CommitTx(params.UseTableSelect, params.UseTableUpsert);
+    auto execTimes = TxSupport->CommitTx(params.UseTableSelect, params.UseTableUpsert);
 
     params.StatsCollector->AddWriterSelectEvent(params.WriterIdx, {execTimes.SelectTime.MilliSeconds()});
     params.StatsCollector->AddWriterUpsertEvent(params.WriterIdx, {execTimes.UpsertTime.MilliSeconds()});

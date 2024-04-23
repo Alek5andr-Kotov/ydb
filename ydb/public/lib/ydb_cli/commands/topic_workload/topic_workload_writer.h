@@ -47,7 +47,7 @@ namespace NYdb {
 
             void Close();
 
-            void Process(std::optional<TTransactionSupport>& txSupport);
+            void Process();
 
             void CreateWorker();
 
@@ -65,15 +65,14 @@ namespace NYdb {
             TInstant GetCreateTimestamp() const;
 
             void TryCommitTx(TTopicWorkloadWriterParams& params,
-                             std::optional<TTransactionSupport>& txSupport,
                              TInstant& commitTime);
-            void TryCommitTableChanges(TTopicWorkloadWriterParams& params,
-                                       std::optional<TTransactionSupport>& txSupport);
+            void TryCommitTableChanges(TTopicWorkloadWriterParams& params);
 
             TTopicWorkloadWriterParams Params;
             ui64 MessageId = 0;
             ui64 AckedMessageId = 0;
             ui64 BytesWritten = 0;
+            std::optional<TTransactionSupport> TxSupport;
             std::shared_ptr<NYdb::NTopic::IWriteSession> WriteSession;
             TInstant StartTimestamp;
 
