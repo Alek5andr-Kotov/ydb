@@ -245,7 +245,9 @@ void TTopicOperationsScenario::StartProducerThreads(std::vector<std::future<void
             .PartitionId = (partitionSeed + writerIdx) % partitionCount,
             .Direct = Direct,
             .Codec = Codec,
-            .UseTransactions = UseTransactions
+            .UseTransactions = UseTransactions,
+            .CommitPeriod = CommitPeriod,
+            .CommitMessages = CommitMessages
         };
 
         threads.push_back(std::async([writerParams = std::move(writerParams)]() mutable { TTopicWorkloadWriterWorker::RetryableWriterLoop(writerParams); }));
