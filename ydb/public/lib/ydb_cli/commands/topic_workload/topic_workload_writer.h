@@ -39,7 +39,8 @@ namespace NYdb {
 
         class TTopicWorkloadWriterWorker {
         public:
-            static void WriterLoop(TTopicWorkloadWriterParams& params);
+            static void RetryableWriterLoop(TTopicWorkloadWriterParams& params);
+            static void WriterLoop(TTopicWorkloadWriterParams& params, TInstant endTime);
             static std::vector<TString> GenerateMessages(size_t messageSize);
         private:
             TTopicWorkloadWriterWorker(TTopicWorkloadWriterParams&& params);
@@ -47,7 +48,7 @@ namespace NYdb {
 
             void Close();
 
-            void Process();
+            void Process(TInstant endTime);
 
             void CreateWorker();
 

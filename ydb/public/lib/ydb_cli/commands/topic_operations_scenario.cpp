@@ -248,7 +248,7 @@ void TTopicOperationsScenario::StartProducerThreads(std::vector<std::future<void
             .UseTransactions = UseTransactions
         };
 
-        threads.push_back(std::async([writerParams = std::move(writerParams)]() mutable { TTopicWorkloadWriterWorker::WriterLoop(writerParams); }));
+        threads.push_back(std::async([writerParams = std::move(writerParams)]() mutable { TTopicWorkloadWriterWorker::RetryableWriterLoop(writerParams); }));
     }
 
     while (*count != ProducerThreadCount) {

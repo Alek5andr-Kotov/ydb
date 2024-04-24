@@ -79,10 +79,9 @@ bool TTopicWorkloadWriterWorker::WaitForInitSeqNo()
     return false;
 }
 
-void TTopicWorkloadWriterWorker::Process() {
+void TTopicWorkloadWriterWorker::Process(TInstant endTime) {
     Sleep(TDuration::Seconds((float)Params.WarmupSec * Params.WriterIdx / Params.ProducerThreadCount));
     
-    const TInstant endTime = TInstant::Now() + TDuration::Seconds(Params.TotalSec);
     TInstant commitTime = TInstant::Now() + TDuration::Seconds(Params.CommitPeriod);
 
     StartTimestamp = Now();
@@ -255,7 +254,19 @@ void TTopicWorkloadWriterWorker::CreateWorker() {
     WriteSession = NYdb::NTopic::TTopicClient(Params.Driver).CreateWriteSession(settings);
 }
 
-void TTopicWorkloadWriterWorker::WriterLoop(TTopicWorkloadWriterParams& params) {
+void TTopicWorkloadWriterWorker::RetryableWriterLoop(TTopicWorkloadWriterParams& params) {
+    const TInstant endTime = Now() + TDuration::Seconds(params.TotalSec + 3);
+
+    while (!*params.ErrorFlag && Now() < endTime) {
+        try {
+            WriterLoop(params, endTime);
+        } catch (const yexception& ex) {
+            WRITE_LOG(params.Log, ELogPriority::TLOG_WARNING, TStringBuilder() << ex);
+        }
+    }
+}
+
+void TTopicWorkloadWriterWorker::WriterLoop(TTopicWorkloadWriterParams& params, TInstant endTime) {
     TTopicWorkloadWriterWorker writer(std::move(params));
 
     if (params.UseTransactions) {
@@ -269,7 +280,7 @@ void TTopicWorkloadWriterWorker::WriterLoop(TTopicWorkloadWriterParams& params) 
     if (!writer.WaitForInitSeqNo())
         return;
 
-    writer.Process();
+    writer.Process(endTime);
 
     WRITE_LOG(params.Log, ELogPriority::TLOG_INFO, TStringBuilder() << "Writer finished " << Now().ToStringUpToSeconds());
 }
