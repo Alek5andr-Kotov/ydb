@@ -524,7 +524,9 @@ void TPartition::Handle(TEvents::TEvPoisonPill::TPtr&, const TActorContext& ctx)
     }
 
     Send(ReadQuotaTrackerActor, new TEvents::TEvPoisonPill());
-    Send(WriteQuotaTrackerActor, new TEvents::TEvPoisonPill());
+    if (!Partition.IsSupportivePartition()) {
+        Send(WriteQuotaTrackerActor, new TEvents::TEvPoisonPill());
+    }
 
     Die(ctx);
 }
@@ -1108,6 +1110,7 @@ void TPartition::Handle(TEvPQ::TEvGetWriteInfoRequest::TPtr& ev, const TActorCon
     response->MessagesSizes = std::move(MessageSize.GetValues());
 
     ctx.Send(ev->Sender, response);
+    ctx.Send(ctx.SelfID, new TEvents::TEvPoisonPill());
 }
 
 void TPartition::Handle(TEvPQ::TEvGetMaxSeqNoRequest::TPtr& ev, const TActorContext& ctx) {
