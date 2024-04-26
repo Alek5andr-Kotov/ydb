@@ -35,6 +35,8 @@ namespace NKikimr::NPQ {
 #define INFO(message)  LOG_INFO_S(*NActors::TlsActivationContext, NKikimrServices::PQ_WRITE_PROXY, LOG_PREFIX << message);
 #define ERROR(message) LOG_ERROR_S(*NActors::TlsActivationContext, NKikimrServices::PQ_WRITE_PROXY, LOG_PREFIX << message);
 
+#define PQ_TRACE(message) ERROR(message)
+
 static const ui64 WRITE_BLOCK_SIZE = 4_KB;
 
 TString TEvPartitionWriter::TEvInitResult::TSuccess::ToString() const {
@@ -189,6 +191,7 @@ class TPartitionWriter: public TActorBootstrapped<TPartitionWriter>, private TRl
     }
 
     void Retry(Ydb::StatusIds::StatusCode code) {
+        PQ_TRACE("TPartitionWriter::Retry");
         if (!RetryState) {
             RetryState = GetRetryPolicy()->CreateRetryState();
         }
@@ -225,6 +228,7 @@ class TPartitionWriter: public TActorBootstrapped<TPartitionWriter>, private TRl
     /// GetWriteId
 
     void GetWriteId(const TActorContext& ctx) {
+        PQ_TRACE("TPartitionWriter::GetWriteId");
         auto ev = MakeWriteIdRequest();
         ctx.Send(NKqp::MakeKqpProxyID(ctx.SelfID.NodeId()), ev.Release());
         Become(&TThis::StateGetWriteId);
@@ -241,6 +245,7 @@ class TPartitionWriter: public TActorBootstrapped<TPartitionWriter>, private TRl
     }
 
     void HandleWriteId(NKqp::TEvKqp::TEvQueryResponse::TPtr& ev, const TActorContext& ctx) {
+        PQ_TRACE("TPartitionWriter::HandleWriteId");
         auto& record = ev->Get()->Record.GetRef();
         switch (record.GetYdbStatus()) {
         case Ydb::StatusIds::SUCCESS:
@@ -305,6 +310,7 @@ class TPartitionWriter: public TActorBootstrapped<TPartitionWriter>, private TRl
     /// GetOwnership
 
     void GetOwnership() {
+        PQ_TRACE("TPartitionWriter::GetOwnership");
         auto ev = MakeRequest(PartitionId, PipeClient);
 
         auto& request = *ev->Record.MutablePartitionRequest();
@@ -328,6 +334,7 @@ class TPartitionWriter: public TActorBootstrapped<TPartitionWriter>, private TRl
     }
 
     void HandleOwnership(TEvPersQueue::TEvResponse::TPtr& ev) {
+        PQ_TRACE("TPartitionWriter::HandleOwnership");
         auto& record = ev->Get()->Record;
 
         TString error;
@@ -351,6 +358,7 @@ class TPartitionWriter: public TActorBootstrapped<TPartitionWriter>, private TRl
     /// GetMaxSeqNo
 
     void GetMaxSeqNo() {
+        PQ_TRACE("TPartitionWriter::GetMaxSeqNo");
         auto ev = MakeRequest(PartitionId, PipeClient);
 
         auto& cmd = *ev->Record.MutablePartitionRequest()->MutableCmdGetMaxSeqNo();
@@ -476,6 +484,7 @@ class TPartitionWriter: public TActorBootstrapped<TPartitionWriter>, private TRl
     }
 
     bool HoldPending(TEvPartitionWriter::TEvWriteRequest::TPtr& ev) {
+        PQ_TRACE("TPartitionWriter::HoldPending");
         auto& record = ev->Get()->Record;
         const auto cookie = record.GetPartitionRequest().GetCookie();
 
@@ -794,6 +803,7 @@ public:
     }
 
     void Bootstrap(const TActorContext& ctx) {
+        PQ_TRACE("TPartitionWriter::Bootstrap");
         NTabletPipe::TClientConfig config;
         config.RetryPolicy = {
             .RetryLimitCount = 6,

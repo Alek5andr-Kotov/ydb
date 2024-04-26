@@ -75,6 +75,7 @@ public:
     }
 
     void SendInitTableRequest(const TActorContext& ctx) {
+        DEBUG("TTableHelper::SendInitTableRequest");
         ctx.Send(
             NMetadata::NProvider::MakeServiceId(ctx.SelfID.NodeId()),
             new NMetadata::NProvider::TEvPrepareManager(NGRpcProxy::V1::TSrcIdMetaInitManager::GetInstant())

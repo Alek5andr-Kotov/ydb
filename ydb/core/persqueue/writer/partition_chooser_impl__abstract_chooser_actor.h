@@ -55,10 +55,12 @@ public:
     }
 
     [[nodiscard]] bool Initialize(const NActors::TActorContext& ctx) {
+        DEBUG("TAbstractPartitionChooserActor::Initialize");
         if (TableHelper.Initialize(ctx, SourceId)) {
             return true;
         }
-        StartIdle();
+        StartIdle();        
+        DEBUG("reply BAD_REQUEST");
         TThis::ReplyError(ErrorCode::BAD_REQUEST, "Bad SourceId", ctx);
         return false;
     }
@@ -77,6 +79,7 @@ public:
 
 protected:
     void InitTable(const NActors::TActorContext& ctx) {
+        DEBUG("TAbstractPartitionChooserActor::InitTable");
         TThis::Become(&TThis::StateInitTable);
         const auto& pqConfig = AppData(ctx)->PQConfig;
         TRACE("InitTable: SourceId="<< SourceId
@@ -90,6 +93,7 @@ protected:
     }
 
     void Handle(NMetadata::NProvider::TEvManagerPrepared::TPtr&, const TActorContext& ctx) {
+        DEBUG("TAbstractPartitionChooserActor::Handle(NMetadata::NProvider::TEvManagerPrepared)");
         StartKqpSession(ctx);
     }
 
@@ -103,6 +107,7 @@ protected:
 
 protected:
     void StartKqpSession(const NActors::TActorContext& ctx) {
+        DEBUG("TAbstractPartitionChooserActor::StartKqpSession");
         if (NeedTable(ctx)) {
             DEBUG("StartKqpSession")
             TThis::Become(&TThis::StateCreateKqpSession);

@@ -31,6 +31,8 @@
     PQ_LOG_ERROR(expr); \
     ctx.Send(ctx.SelfID, new TEvents::TEvPoisonPill())
 
+#define PQ_TRACE(expr) LOG_ERROR_S(ctx, NKikimrServices::PERSQUEUE, "++ Tablet " << TabletID() << "  " << expr)
+
 namespace NKikimr::NPQ {
 
 static constexpr TDuration TOTAL_TIMEOUT = TDuration::Seconds(120);

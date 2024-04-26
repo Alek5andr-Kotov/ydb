@@ -20,6 +20,7 @@
 #include <util/string/escape.h>
 #include <util/string/printf.h>
 
+#define PQ_TRACE(message) LOG_ERROR_S(ctx, NKikimrServices::PQ_WRITE_PROXY, "Partition: " << Partition << " " << message)
 
 using namespace NActors;
 using namespace NKikimrClient;
@@ -327,6 +328,7 @@ void TWriteSessionActor<UseMigrationProtocol>::Handle(TEvPQProxy::TEvDone::TPtr&
 
 template<bool UseMigrationProtocol>
 void TWriteSessionActor<UseMigrationProtocol>::CheckACL(const TActorContext& ctx) {
+    PQ_TRACE("TWriteSessionActor::CheckACL");
     //Y_ABORT_UNLESS(ACLCheckInProgress);
 
     NACLib::EAccessRights rights = NACLib::EAccessRights::UpdateRow;
@@ -625,6 +627,7 @@ void TWriteSessionActor<UseMigrationProtocol>::Handle(TEvDescribeTopicsResponse:
 
 template<bool UseMigrationProtocol>
 void TWriteSessionActor<UseMigrationProtocol>::DiscoverPartition(const NActors::TActorContext& ctx) {
+    PQ_TRACE("TWriteSessionActor::DiscoverPartition PreferedPartition=" << PreferedPartition);
     State = ES_WAIT_PARTITION;
 
     if (PartitionChooser) {
@@ -652,6 +655,7 @@ void TWriteSessionActor<UseMigrationProtocol>::Handle(NPQ::TEvPartitionChooser::
 
 template<bool UseMigrationProtocol>
 void TWriteSessionActor<UseMigrationProtocol>::ProceedPartition(const ui32 partition, const TActorContext& ctx) {
+    PQ_TRACE("TWriteSessionActor::ProceedPartition");
     Partition = partition;
 
     LOG_DEBUG_S(ctx, NKikimrServices::PQ_WRITE_PROXY, "ProceedPartition. session cookie: " << Cookie << " sessionId: " << OwnerCookie << " partition: " << Partition << " expectedGeneration: " << ExpectedGeneration);

@@ -37,7 +37,9 @@ public:
     }
 
     void Bootstrap(const TActorContext& ctx) {
+        DEBUG("TPartitionChooserActor::Bootstrap");
         if (!TThis::Initialize(ctx)) {
+            DEBUG("not initialized");
             return;
         }
         TThis::InitTable(ctx);
@@ -48,6 +50,7 @@ public:
     }
 
     void OnSelected(const TActorContext &ctx) override {
+        DEBUG("TPartitionChooserActor::OnSelected");
         if (TThis::Partition) {
             return OnPartitionChosen(ctx);
         }
@@ -134,12 +137,18 @@ private:
     }
 
     std::pair<bool, const TPartitionInfo*> ChoosePartitionSync(const TActorContext& ctx) const {
+        DEBUG("TPartitionChooserActor::ChoosePartitionSync");
+        DEBUG("PreferedPartition=" << TThis::PreferedPartition);
+        DEBUG("SourceId=" << TThis::SourceId);
         const auto& pqConfig = AppData(ctx)->PQConfig;
         if (TThis::PreferedPartition) {
+            DEBUG("choose by PreferedPartition");
             return {false, TThis::Chooser->GetPartition(TThis::PreferedPartition.value())};
         } else if (pqConfig.GetTopicsAreFirstClassCitizen() && TThis::SourceId) {
+            DEBUG("choose by SourceId");
             return {false, TThis::Chooser->GetPartition(TThis::SourceId)};
         } else {
+            DEBUG("choose by ?");
             return {true, nullptr};
         }
     };
