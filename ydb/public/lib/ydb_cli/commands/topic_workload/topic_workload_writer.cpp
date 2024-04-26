@@ -53,7 +53,7 @@ bool TTopicWorkloadWriterWorker::WaitForInitSeqNo()
     NThreading::TFuture<ui64> InitSeqNo = WriteSession->GetInitSeqNo();
     while (!*Params.ErrorFlag) {
         if (!InitSeqNo.HasValue() && !InitSeqNo.Wait(TDuration::Seconds(1))) {
-            WRITE_LOG(Params.Log, ELogPriority::TLOG_WARNING, "No initial sequence number.");
+            WRITE_LOG(Params.Log, ELogPriority::TLOG_WARNING, TStringBuilder() << "No initial sequence number for ProducerId " << Params.ProducerId << " PartitionId " << Params.PartitionId);
             Sleep(TDuration::Seconds(1));
             continue;
         }
