@@ -6,6 +6,7 @@
 #include <util/generic/size_literals.h>
 
 #include <algorithm>
+#include <ydb/library/dbgtrace/debug_trace.h>
 
 namespace NKikimr::NPQ {
 
@@ -377,8 +378,11 @@ void TSourceIdStorage::LoadProtoSourceIdInfo(const TString& key, const TString& 
 }
 
 void TSourceIdStorage::RegisterSourceIdInfo(const TString& sourceId, TSourceIdInfo&& sourceIdInfo, bool load) {
+    DBGTRACE("TSourceIdStorage::RegisterSourceIdInfo");
+    DBGTRACE_LOG("sourceId=" << sourceId);
     auto it = InMemorySourceIds.find(sourceId);
     if (it != InMemorySourceIds.end()) {
+        DBGTRACE_LOG("exist");
         if (!load || it->second.Offset < sourceIdInfo.Offset) {
             const auto res = SourceIdsByOffset[sourceIdInfo.Explicit].erase(std::make_pair(it->second.Offset, sourceId));
             Y_ABORT_UNLESS(res == 1);
@@ -404,6 +408,7 @@ void TSourceIdStorage::RegisterSourceIdInfo(const TString& sourceId, TSourceIdIn
         ApplyHeartbeat(sourceId, heartbeat->Version);
     }
 
+    DBGTRACE_LOG("update InMemorySourceIds");
     InMemorySourceIds[sourceId] = std::move(sourceIdInfo);
 }
 

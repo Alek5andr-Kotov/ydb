@@ -22,6 +22,7 @@
 #include <util/folder/path.h>
 #include <util/string/escape.h>
 #include <util/system/byteorder.h>
+#include <ydb/library/dbgtrace/debug_trace.h>
 
 namespace NKikimr::NPQ {
 
@@ -373,6 +374,7 @@ void TPartition::AnswerCurrentWrites(const TActorContext& ctx) {
 }
 
 void TPartition::SyncMemoryStateWithKVState(const TActorContext& ctx) {
+    DBGTRACE("TPartition::SyncMemoryStateWithKVState");
     PQ_LOG_T("TPartition::SyncMemoryStateWithKVState.");
 
     if (!CompactedKeys.empty())
@@ -432,6 +434,7 @@ void TPartition::SyncMemoryStateWithKVState(const TActorContext& ctx) {
     }
 
     EndOffset = Head.GetNextOffset();
+    DBGTRACE_LOG("EndOffset=" << EndOffset);
     NewHead.Clear();
     NewHead.Offset = EndOffset;
 
@@ -442,6 +445,7 @@ void TPartition::SyncMemoryStateWithKVState(const TActorContext& ctx) {
 
 void TPartition::OnHandleWriteResponse(const TActorContext& ctx)
 {
+    DBGTRACE("TPartition::OnHandleWriteResponse");
     KVWriteInProgress = false;
     OnProcessTxsAndUserActsWriteComplete(ctx);
     HandleWriteResponse(ctx);
@@ -454,6 +458,7 @@ void TPartition::OnHandleWriteResponse(const TActorContext& ctx)
 
 void TPartition::Handle(TEvPQ::TEvHandleWriteResponse::TPtr&, const TActorContext& ctx)
 {
+    DBGTRACE("TPartition::Handle(TEvPQ::TEvHandleWriteResponse)");
     PQ_LOG_T("TPartition::HandleOnWrite TEvHandleWriteResponse.");
     OnHandleWriteResponse(ctx);
 }
@@ -480,6 +485,8 @@ void TPartition::UpdateAfterWriteCounters(bool writeComplete) {
 }
 
 void TPartition::HandleWriteResponse(const TActorContext& ctx) {
+    DBGTRACE("TPartition::HandleWriteResponse");
+    DBGTRACE_LOG("HaveWriteMsg=" << HaveWriteMsg);
     PQ_LOG_T("TPartition::HandleWriteResponse.");
 
     if (!HaveWriteMsg) {
@@ -1476,6 +1483,10 @@ void TPartition::BeginProcessWrites(const TActorContext& ctx)
 
 void TPartition::EndProcessWrites(TEvKeyValue::TEvRequest* request, const TActorContext& ctx)
 {
+    DBGTRACE("TPartition::EndProcessWrites");
+    DBGTRACE_LOG("HeadCleared=" << HeadCleared);
+    DBGTRACE_LOG("NewHead.PackedSize=" << NewHead.PackedSize);
+    DBGTRACE_LOG("SourceIdBatch->HasModifications=" << SourceIdBatch->HasModifications());
     if (HeadCleared) {
         Y_ABORT_UNLESS(!CompactedKeys.empty() || Head.PackedSize == 0);
         for (ui32 i = 0; i < TotalLevels; ++i) {

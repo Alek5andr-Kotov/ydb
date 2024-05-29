@@ -11,6 +11,7 @@
 #include <library/cpp/logger/stream.h>
 
 #include <library/cpp/testing/unittest/registar.h>
+#include <ydb/library/dbgtrace/debug_trace.h>
 
 namespace NYdb::NTopic::NTests {
 
@@ -463,6 +464,7 @@ auto TFixture::CreateTopicWriteSession(const TString& topicPath,
     options.Path(topicPath);
     options.ProducerId(messageGroupId);
     options.MessageGroupId(messageGroupId);
+    options.Codec(ECodec::RAW);
     return client.CreateWriteSession(options);
 }
 
@@ -1092,6 +1094,7 @@ Y_UNIT_TEST_F(WriteToTopic_Demo_8, TFixture)
 
 Y_UNIT_TEST_F(WriteToTopic_Demo_9, TFixture)
 {
+    DBGTRACE("WriteToTopic_Demo_9");
     CreateTopic("topic_A");
 
     NTable::TSession tableSession = CreateTableSession();
@@ -1112,8 +1115,11 @@ Y_UNIT_TEST_F(WriteToTopic_Demo_9, TFixture)
         UNIT_ASSERT_VALUES_EQUAL(messages.size(), 0);
     }
 
+    DBGTRACE_LOG("for tx_2 expected SUCCESS");
     CommitTx(tx_2, EStatus::SUCCESS);
+    DBGTRACE_LOG("for tx_1 expected ABORTED");
     CommitTx(tx_1, EStatus::ABORTED);
+    DBGTRACE_LOG("check write");
 
     {
         auto messages = ReadFromTopic("topic_A", TEST_CONSUMER, TDuration::Seconds(2));
@@ -1384,6 +1390,19 @@ Y_UNIT_TEST_F(WriteToTopic_Demo_15, TFixture)
     WriteToTopic("topic_A", TEST_MESSAGE_GROUP_ID_2, "message #2", &tx);
     WaitForAcks("topic_A", TEST_MESSAGE_GROUP_ID_2);
     CloseTopicWriteSession("topic_A", TEST_MESSAGE_GROUP_ID_2);
+
+    CommitTx(tx, EStatus::SUCCESS);
+}
+
+Y_UNIT_TEST_F(WriteToTopic_Demo_16, TFixture)
+{
+    CreateTopic("topic_A");
+
+    NTable::TSession tableSession = CreateTableSession();
+    NTable::TTransaction tx = BeginTx(tableSession);
+
+    WriteToTopic("topic_A", TEST_MESSAGE_GROUP_ID, TString(20'000'000, 'x'), &tx);
+    WaitForAcks("topic_A", TEST_MESSAGE_GROUP_ID);
 
     CommitTx(tx, EStatus::SUCCESS);
 }

@@ -39,7 +39,7 @@ struct TMirrorerInfo;
 
 struct TTransaction {
     explicit TTransaction(TSimpleSharedPtr<TEvPQ::TEvTxCalcPredicate> tx,
-                          TMaybe<bool> predicate = Nothing()) :
+                          TMaybe<bool> predicate = Nothing()) : // for TEvPQ::TEvChangePartitionConfig
         Tx(tx),
         Predicate(predicate)
     {
@@ -62,6 +62,10 @@ struct TTransaction {
 
     TSimpleSharedPtr<TEvPQ::TEvTxCalcPredicate> Tx;
     TMaybe<bool> Predicate;
+    THolder<TEvPQ::TEvGetWriteInfoResponse> WriteInfoResponse;
+    bool Immediate = false;
+    TActorId SourceActor;
+    TMaybe<ui64> WriteId;
 
     TSimpleSharedPtr<TEvPQ::TEvChangePartitionConfig> ChangeConfig;
     bool SendReply;
@@ -294,6 +298,11 @@ private:
                               NKikimrPQ::TEvProposeTransactionResult::EStatus statusCode,
                               NKikimrPQ::TError::EKind kind,
                               const TString& reason);
+    void ScheduleReplyPropose(const TActorId& sourceActor,
+                              ui64 txId,
+                              NKikimrPQ::TEvProposeTransactionResult::EStatus statusCode,
+                              NKikimrPQ::TError::EKind kind,
+                              const TString& reason);
     void ScheduleReplyCommitDone(ui64 step, ui64 txId);
     void ScheduleDropPartitionLabeledCounters(const TString& group);
     void SchedulePartitionConfigChanged();
@@ -319,7 +328,7 @@ private:
     THolder<TEvPQ::TEvError> MakeReplyError(const ui64 dst,
                                             NPersQueue::NErrorCode::EErrorCode errorCode,
                                             const TString& error);
-    THolder<TEvPersQueue::TEvProposeTransactionResult> MakeReplyPropose(const NKikimrPQ::TEvProposeTransaction& event,
+    THolder<TEvPersQueue::TEvProposeTransactionResult> MakeReplyPropose(ui64 txId,
                                                                         NKikimrPQ::TEvProposeTransactionResult::EStatus statusCode,
                                                                         NKikimrPQ::TError::EKind kind,
                                                                         const TString& reason);
@@ -821,8 +830,16 @@ private:
     void OnHandleWriteResponse(const TActorContext& ctx);
 
     void ScheduleTransactionCompleted(const NKikimrPQ::TEvProposeTransaction& tx);
+    void ScheduleTransactionCompleted(TMaybe<ui64> writeId);
 
     void DestroyActor(const TActorContext& ctx);
+
+    void ProcessImmediateTx(const TTransaction& tx,
+                            TEvKeyValue::TEvRequest* request,
+                            const TActorContext& ctx);
+    void PublishWriteOperations(const TTransaction& t,
+                                TEvKeyValue::TEvRequest* request,
+                                const TActorContext& ctx);
 };
 
 } // namespace NKikimr::NPQ
