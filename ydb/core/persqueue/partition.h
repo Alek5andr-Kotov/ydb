@@ -272,9 +272,9 @@ private:
     void ProcessDistrTx(const TActorContext& ctx);
 
     void AddImmediateTx(TSimpleSharedPtr<TEvPersQueue::TEvProposeTransaction> event);
-    void ProcessImmediateTx(const NKikimrPQ::TEvProposeTransaction& tx,
-                            bool predicate,
-                            const TActorContext& ctx);
+//    void ProcessImmediateTx(const NKikimrPQ::TEvProposeTransaction& tx,
+//                            bool predicate,
+//                            const TActorContext& ctx);
 
     void AddUserAct(TSimpleSharedPtr<TEvPQ::TEvSetClientInfo> act);
     void RemoveUserAct();
@@ -840,6 +840,10 @@ private:
     void PublishWriteOperations(const TTransaction& t,
                                 TEvKeyValue::TEvRequest* request,
                                 const TActorContext& ctx);
+
+    void CalculatePredicate(TTransaction& tx);
+    bool GetReadOperationsPredicate(const TTransaction& tx) const;
+    bool GetWriteOperationsPredicate(const TTransaction& tx) const;
 };
 
 } // namespace NKikimr::NPQ

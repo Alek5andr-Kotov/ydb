@@ -997,7 +997,7 @@ void TPartition::Handle(TEvPQ::TEvTxRollback::TPtr& ev, const TActorContext& ctx
 
 TTransaction MakeImmediateTransaction(const TEvPersQueue::TEvProposeTransaction& event,
                                       THolder<TEvPQ::TEvGetWriteInfoResponse>&& response,
-                                      bool predicate)
+                                      TMaybe<bool> predicate = Nothing())
 {
     DBGTRACE("MakeImmediateTransaction");
     auto source = MakeSimpleShared<TEvPQ::TEvTxCalcPredicate>(Max<ui64>(),
@@ -1027,6 +1027,90 @@ TTransaction MakeImmediateTransaction(const TEvPersQueue::TEvProposeTransaction&
     }
 
     return tx;
+}
+
+void TPartition::CalculatePredicate(TTransaction& tx)
+{
+    tx.Predicate = GetReadOperationsPredicate(tx) && GetWriteOperationsPredicate(tx);
+}
+
+bool TPartition::GetReadOperationsPredicate(const TTransaction& t) const
+{
+    Y_ABORT_UNLESS(t.Tx);
+
+    for (auto& operation : t.Tx->Operations) {
+        const TString& consumer = operation.GetConsumer();
+
+        if (AffectedUsers.contains(consumer) && !GetPendingUserIfExists(consumer)) {
+            LOG_DEBUG_S(ctx, NKikimrServices::PERSQUEUE,
+                        "Partition " << Partition <<
+                        " Consumer '" << consumer << "' has been removed");
+            return false;
+        }
+
+        if (!UsersInfoStorage->GetIfExists(consumer)) {
+            LOG_DEBUG_S(ctx, NKikimrServices::PERSQUEUE,
+                        "Partition " << Partition <<
+                        " Unknown consumer '" << consumer << "'");
+            return false;
+        }
+
+        bool isAffectedConsumer = AffectedUsers.contains(consumer);
+        TUserInfoBase& userInfo = GetOrCreatePendingUser(consumer);
+
+        if (operation.GetBegin() > operation.GetEnd()) {
+            LOG_DEBUG_S(ctx, NKikimrServices::PERSQUEUE,
+                        "Partition " << Partition <<
+                        " Consumer '" << consumer << "'" <<
+                        " Bad request (invalid range) " <<
+                        " Begin " << operation.GetBegin() <<
+                        " End " << operation.GetEnd());
+            predicate = false;
+        } else if (userInfo.Offset != (i64)operation.GetBegin()) {
+            LOG_DEBUG_S(ctx, NKikimrServices::PERSQUEUE,
+                        "Partition " << Partition <<
+                        " Consumer '" << consumer << "'" <<
+                        " Bad request (gap) " <<
+                        " Offset " << userInfo.Offset <<
+                        " Begin " << operation.GetBegin());
+            predicate = false;
+        } else if (operation.GetEnd() > EndOffset) {
+            LOG_DEBUG_S(ctx, NKikimrServices::PERSQUEUE,
+                        "Partition " << Partition <<
+                        " Consumer '" << consumer << "'" <<
+                        " Bad request (behind the last offset) " <<
+                        " EndOffset " << EndOffset <<
+                        " End " << operation.GetEnd());
+            predicate = false;
+        }
+
+        if (!predicate) {
+            if (!isAffectedConsumer) {
+                AffectedUsers.erase(consumer);
+            }
+            break;
+        }
+    }
+}
+
+bool TPartition::GetWriteOperationsPredicate(const TTransaction& t) const
+{
+    if (!t.WriteInfoResponse) {
+        return true;
+    }
+
+    for (auto& [k, v] : t.WriteInfoResponse->SrcIdInfo) {
+        auto s = SourceManager.Get(k);
+        if (s.State == TSourceIdInfo::EState::Unknown) {
+            continue;
+        }
+
+        if (v.MinSeqNo < s.SeqNo) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 void TPartition::Handle(TEvPQ::TEvGetWriteInfoResponse::TPtr& ev, const TActorContext& ctx)
@@ -1920,7 +2004,6 @@ TPartition::EProcessResult TPartition::ProcessUserActionOrTransaction(TTransacti
 bool TPartition::BeginTransaction(const TEvPQ::TEvTxCalcPredicate& tx,
                                   const TActorContext& ctx)
 {
-    Y_UNUSED(ctx);
     bool predicate = true;
 
     for (auto& operation : tx.Operations) {
@@ -2307,7 +2390,10 @@ TPartition::EProcessResult TPartition::ProcessUserActionOrTransaction(const TEvP
         }
     } else {
         // This is a transaction for a read operation
-        ProcessImmediateTx(event.Record, true, ctx);
+        auto tx = MakeImmediateTransaction(event, {});
+
+        CalculatePredicate(tx);
+        ProcessImmediateTx(tx, request, ctx);
         --ImmediateTxCount;
 
         result = EProcessResult::Continue;
@@ -2316,78 +2402,78 @@ TPartition::EProcessResult TPartition::ProcessUserActionOrTransaction(const TEvP
     return result;
 }
 
-void TPartition::ProcessImmediateTx(const NKikimrPQ::TEvProposeTransaction& tx,
-                                    bool predicate,
-                                    const TActorContext& ctx)
-{
-
-    Y_ABORT_UNLESS(tx.GetTxBodyCase() == NKikimrPQ::TEvProposeTransaction::kData);
-    Y_ABORT_UNLESS(tx.HasData());
-
-    if (!predicate) {
-        ScheduleReplyPropose(tx,
-                             NKikimrPQ::TEvProposeTransactionResult::ABORTED,
-                             NKikimrPQ::TError::INTERNAL,
-                             "not an empty list of keys");
-        return;
-    }
-
-    for (auto& operation : tx.GetData().GetOperations()) {
-        if (!operation.HasBegin()) {
-            continue;
-        }
-
-        Y_ABORT_UNLESS(operation.HasEnd() && operation.HasConsumer());
-
-        Y_ABORT_UNLESS(operation.GetBegin() <= (ui64)Max<i64>(), "Unexpected begin offset: %" PRIu64, operation.GetBegin());
-        Y_ABORT_UNLESS(operation.GetEnd() <= (ui64)Max<i64>(), "Unexpected end offset: %" PRIu64, operation.GetEnd());
-
-        const TString& user = operation.GetConsumer();
-
-        if (!PendingUsersInfo.contains(user) && AffectedUsers.contains(user)) {
-            ScheduleReplyPropose(tx,
-                                 NKikimrPQ::TEvProposeTransactionResult::ABORTED,
-                                 NKikimrPQ::TError::BAD_REQUEST,
-                                 "the consumer has been deleted");
-            return;
-        }
-
-        TUserInfoBase& userInfo = GetOrCreatePendingUser(user);
-
-        if (operation.GetBegin() > operation.GetEnd()) {
-            ScheduleReplyPropose(tx,
-                                 NKikimrPQ::TEvProposeTransactionResult::BAD_REQUEST,
-                                 NKikimrPQ::TError::BAD_REQUEST,
-                                 "incorrect offset range (begin > end)");
-            return;
-        }
-
-        if (userInfo.Offset != (i64)operation.GetBegin()) {
-            ScheduleReplyPropose(tx,
-                                 NKikimrPQ::TEvProposeTransactionResult::ABORTED,
-                                 NKikimrPQ::TError::BAD_REQUEST,
-                                 "incorrect offset range (gap)");
-            return;
-        }
-
-        if (operation.GetEnd() > EndOffset) {
-            ScheduleReplyPropose(tx,
-                                 NKikimrPQ::TEvProposeTransactionResult::BAD_REQUEST,
-                                 NKikimrPQ::TError::BAD_REQUEST,
-                                 "incorrect offset range (commit to the future)");
-            return;
-        }
-
-        userInfo.Offset = operation.GetEnd();
-    }
-
-    ScheduleReplyPropose(tx,
-                         NKikimrPQ::TEvProposeTransactionResult::COMPLETE,
-                         NKikimrPQ::TError::OK,
-                         "");
-
-    CommitWriteOperations(ctx);
-}
+//void TPartition::ProcessImmediateTx(const NKikimrPQ::TEvProposeTransaction& tx,
+//                                    bool predicate,
+//                                    const TActorContext& ctx)
+//{
+//
+//    Y_ABORT_UNLESS(tx.GetTxBodyCase() == NKikimrPQ::TEvProposeTransaction::kData);
+//    Y_ABORT_UNLESS(tx.HasData());
+//
+//    if (!predicate) {
+//        ScheduleReplyPropose(tx,
+//                             NKikimrPQ::TEvProposeTransactionResult::ABORTED,
+//                             NKikimrPQ::TError::INTERNAL,
+//                             "not an empty list of keys");
+//        return;
+//    }
+//
+//    for (auto& operation : tx.GetData().GetOperations()) {
+//        if (!operation.HasBegin()) {
+//            continue;
+//        }
+//
+//        Y_ABORT_UNLESS(operation.HasEnd() && operation.HasConsumer());
+//
+//        Y_ABORT_UNLESS(operation.GetBegin() <= (ui64)Max<i64>(), "Unexpected begin offset: %" PRIu64, operation.GetBegin());
+//        Y_ABORT_UNLESS(operation.GetEnd() <= (ui64)Max<i64>(), "Unexpected end offset: %" PRIu64, operation.GetEnd());
+//
+//        const TString& user = operation.GetConsumer();
+//
+//        if (!PendingUsersInfo.contains(user) && AffectedUsers.contains(user)) {
+//            ScheduleReplyPropose(tx,
+//                                 NKikimrPQ::TEvProposeTransactionResult::ABORTED,
+//                                 NKikimrPQ::TError::BAD_REQUEST,
+//                                 "the consumer has been deleted");
+//            return;
+//        }
+//
+//        TUserInfoBase& userInfo = GetOrCreatePendingUser(user);
+//
+//        if (operation.GetBegin() > operation.GetEnd()) {
+//            ScheduleReplyPropose(tx,
+//                                 NKikimrPQ::TEvProposeTransactionResult::BAD_REQUEST,
+//                                 NKikimrPQ::TError::BAD_REQUEST,
+//                                 "incorrect offset range (begin > end)");
+//            return;
+//        }
+//
+//        if (userInfo.Offset != (i64)operation.GetBegin()) {
+//            ScheduleReplyPropose(tx,
+//                                 NKikimrPQ::TEvProposeTransactionResult::ABORTED,
+//                                 NKikimrPQ::TError::BAD_REQUEST,
+//                                 "incorrect offset range (gap)");
+//            return;
+//        }
+//
+//        if (operation.GetEnd() > EndOffset) {
+//            ScheduleReplyPropose(tx,
+//                                 NKikimrPQ::TEvProposeTransactionResult::BAD_REQUEST,
+//                                 NKikimrPQ::TError::BAD_REQUEST,
+//                                 "incorrect offset range (commit to the future)");
+//            return;
+//        }
+//
+//        userInfo.Offset = operation.GetEnd();
+//    }
+//
+//    ScheduleReplyPropose(tx,
+//                         NKikimrPQ::TEvProposeTransactionResult::COMPLETE,
+//                         NKikimrPQ::TError::OK,
+//                         "");
+//
+//    CommitWriteOperations(ctx);
+//}
 
 void TPartition::ProcessImmediateTx(const TTransaction& t,
                                     TEvKeyValue::TEvRequest* request,
@@ -2414,7 +2500,7 @@ void TPartition::ProcessImmediateTx(const TTransaction& t,
                              t.Tx->TxId,
                              NKikimrPQ::TEvProposeTransactionResult::ABORTED,
                              NKikimrPQ::TError::BAD_REQUEST,
-                             "predicate violation (invalid seqno)");
+                             "predicate violation");
         return;
     }
 
