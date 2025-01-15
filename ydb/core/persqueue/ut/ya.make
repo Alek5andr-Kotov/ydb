@@ -44,6 +44,7 @@ SRCS(
     microseconds_sliding_window_ut.cpp
     fetch_request_ut.cpp
     utils_ut.cpp
+    cache_eviction_ut.cpp
 )
 
 RESOURCE(
