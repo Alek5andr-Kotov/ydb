@@ -253,7 +253,8 @@ private:
                                    ui64 tabletId);
     TVector<TString> GetPQTabletDataKeys(const TActorId& actorId,
                                          ui64 tabletId);
-    TVector<NKikimr::NPQ::TEvPqCache::TEvCacheKeysResponse::TKey> GetPQCacheKeys(const TActorId& actorId);
+    TVector<NKikimr::NPQ::TEvPqCache::TEvCacheKeysResponse::TKey> GetPQCacheKeys(const TActorId& actorId,
+                                                                                 ui64 tabletId);
     NPQ::TWriteId GetTransactionWriteId(const TActorId& actorId,
                                         ui64 tabletId);
     void SendLongTxLockStatus(const TActorId& actorId,
@@ -1109,7 +1110,8 @@ TVector<TString> TFixture::GetPQTabletDataKeys(const TActorId& actorId,
     return keys;
 }
 
-TVector<NKikimr::NPQ::TEvPqCache::TEvCacheKeysResponse::TKey> TFixture::GetPQCacheKeys(const TActorId& edge)
+TVector<NKikimr::NPQ::TEvPqCache::TEvCacheKeysResponse::TKey> TFixture::GetPQCacheKeys(const TActorId& edge,
+                                                                                       ui64 tabletId)
 {
     using namespace NKikimr::NPQ;
 
@@ -1122,7 +1124,15 @@ TVector<NKikimr::NPQ::TEvPqCache::TEvCacheKeysResponse::TKey> TFixture::GetPQCac
     TAutoPtr<IEventHandle> handle;
     auto* result = runtime.GrabEdgeEvent<TEvPqCache::TEvCacheKeysResponse>(handle);
 
-    return result->Keys;
+    TVector<NKikimr::NPQ::TEvPqCache::TEvCacheKeysResponse::TKey> keys;
+
+    for (const auto& key : result->Keys) {
+        if (key.TabletId == tabletId) {
+            keys.push_back(key);
+        }
+    }
+
+    return keys;
 }
 
 void TFixture::RestartLongTxService()
@@ -1840,9 +1850,19 @@ void TFixture::EnsureKeysIsEqual(const TString& topicName, unsigned id)
     ui64 tabletId = GetTopicTabletId(edge, "/Root/" + topicName, 0);
 
     auto tabletKeys = GetPQTabletDataKeys(edge, tabletId);
-    auto cacheKeys = GetPQCacheKeys(edge);
+    auto cacheKeys = GetPQCacheKeys(edge, tabletId);
 
-    UNIT_ASSERT_VALUES_EQUAL_C(tabletKeys.size(), cacheKeys.size(), "id=");
+    Cerr << "== tablet keys ==" << Endl;
+    for (const auto& key : tabletKeys) {
+        Cerr << key << Endl;
+    }
+    Cerr << "== cache keys ===" << Endl;
+    for (const auto& key : cacheKeys) {
+        Cerr << "(" << key.Partition.OriginalPartitionId << "," << key.Partition.InternalPartitionId << ") " << key.Offset << " " << key.PartNo << Endl;
+    }
+    Cerr << "=================" << Endl;
+
+    UNIT_ASSERT_VALUES_EQUAL_C(tabletKeys.size(), cacheKeys.size(), "id=" << id);
 
     auto compareBlobId = [](const TEvPqCache::TEvCacheKeysResponse::TKey& lhs,
                             const TEvPqCache::TEvCacheKeysResponse::TKey& rhs) {
@@ -2670,11 +2690,47 @@ Y_UNIT_TEST_F(WriteToTopic_Demo_49, TFixture)
     TString message(128_KB, 'x');
 
     for (unsigned i = 0; i < 252; ++i) {
-        WriteToTopic("topic_A", TEST_MESSAGE_GROUP_ID_1, message);
-        WaitForAcks("topic_A", TEST_MESSAGE_GROUP_ID_1);
+        WriteToTopic("topic_A", TEST_MESSAGE_GROUP_ID, message);
+        WaitForAcks("topic_A", TEST_MESSAGE_GROUP_ID);
 
         EnsureKeysIsEqual("topic_A", i);
     }
+}
+
+Y_UNIT_TEST_F(WriteToTopic_Demo_50, TFixture)
+{
+    CreateTopic("topic_A", TEST_CONSUMER);
+    CreateTopic("topic_B", TEST_CONSUMER);
+
+    TString message(128_KB, 'x');
+
+    WriteToTopic("topic_A", TEST_MESSAGE_GROUP_ID_1, message);
+    WaitForAcks("topic_A", TEST_MESSAGE_GROUP_ID_1);
+
+    auto session = CreateTableSession();
+
+    // tx #1
+    auto tx = BeginTx(session);
+
+    WriteToTopic("topic_A", TEST_MESSAGE_GROUP_ID_2, message, &tx);
+    WriteToTopic("topic_B", TEST_MESSAGE_GROUP_ID_3, message, &tx);
+
+    CommitTx(tx, EStatus::SUCCESS);
+
+    // tx #2
+    tx = BeginTx(session);
+
+    for (unsigned i = 0; i < 80; ++i) {
+        WriteToTopic("topic_A", TEST_MESSAGE_GROUP_ID_2, message, &tx);
+    }
+
+    WriteToTopic("topic_B", TEST_MESSAGE_GROUP_ID_3, message, &tx);
+
+    CommitTx(tx, EStatus::SUCCESS);
+
+    Sleep(TDuration::Seconds(5));
+
+    EnsureKeysIsEqual("topic_A", 0);
 }
 
 class TFixtureSinks : public TFixture {
