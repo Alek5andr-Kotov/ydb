@@ -16,11 +16,61 @@ TString GetOperationDescription(const Ydb::Operations::Operation& o)
 {
     TStringBuilder sb;
     sb << "status " << Ydb::StatusIds::StatusCode_Name(o.status());
-    //sb << " issues " << o.issues();
+    for (int i = 0; i < o.issues().size(); ++i) {
+        sb << " issues[" << i << "] " << o.issues()[i];
+    }
     return sb;
 }
 
-Ydb::KeyValue::DescribeVolumeResult DescribeVolume(std::shared_ptr<grpc::ChannelInterface> channel, const TString &path)
+using TGrpcChannelInterfacePtr = std::shared_ptr<grpc::ChannelInterface>;
+
+Ydb::KeyValue::CreateVolumeResult CreateVolume(TGrpcChannelInterfacePtr channel, const TString& path)
+{
+    auto stub = Ydb::KeyValue::V1::KeyValueService::NewStub(channel);
+
+    Ydb::KeyValue::CreateVolumeRequest request;
+    request.set_path(path);
+    request.set_partition_count(1);
+    request.mutable_storage_config()->add_channel()->set_media("ssd");
+
+    Ydb::KeyValue::CreateVolumeResponse response;
+    Ydb::KeyValue::CreateVolumeResult result;
+
+    grpc::ClientContext ctx;
+    MakeRequestContext(ctx);
+
+    stub->CreateVolume(&ctx, request, &response);
+    Y_ABORT_UNLESS(response.operation().status() == Ydb::StatusIds::SUCCESS,
+                   "operation: %s", GetOperationDescription(response.operation()).data());
+
+    response.operation().result().UnpackTo(&result);
+
+    return result;
+}
+
+Ydb::KeyValue::DropVolumeResult DropVolume(TGrpcChannelInterfacePtr channel, const TString& path)
+{
+    auto stub = Ydb::KeyValue::V1::KeyValueService::NewStub(channel);
+
+    Ydb::KeyValue::DropVolumeRequest request;
+    request.set_path(path);
+
+    Ydb::KeyValue::DropVolumeResponse response;
+    Ydb::KeyValue::DropVolumeResult result;
+
+    grpc::ClientContext ctx;
+    MakeRequestContext(ctx);
+
+    stub->DropVolume(&ctx, request, &response);
+    Y_ABORT_UNLESS(response.operation().status() == Ydb::StatusIds::SUCCESS,
+                   "operation: %s", GetOperationDescription(response.operation()).data());
+
+    response.operation().result().UnpackTo(&result);
+
+    return result;
+}
+
+Ydb::KeyValue::DescribeVolumeResult DescribeVolume(TGrpcChannelInterfacePtr channel, const TString &path)
 {
     auto stub = Ydb::KeyValue::V1::KeyValueService::NewStub(channel);
 
@@ -50,7 +100,7 @@ int main(int argc, char* argv[])
     TString endpoint = "lbk-devslice-1.logbroker.yandex.net";
     TString database = "/lbk-devslice-1/db1";
     ui16 port = 2135;
-    TString topicPath = database + "/" + "my_topic";
+    TString topicPath = database + "/" + "kvtable";
 
     //using namespace NLastGetopt;
     //TOpts opts = TOpts::Default();
@@ -60,11 +110,14 @@ int main(int argc, char* argv[])
     //opts.AddLongOption('p', "partition", "partition").RequiredArgument("number");
     //TOptsParseResult res(&opts, argc, argv);
 
-    std::shared_ptr<grpc::ChannelInterface> channel;
+    TGrpcChannelInterfacePtr channel;
     channel = grpc::CreateChannel(endpoint + ":" + ToString(port), grpc::InsecureChannelCredentials());
 
-    auto result = DescribeVolume(channel, topicPath);
+    //CreateVolume(channel, topicPath);
+    DropVolume(channel, topicPath);
 
-    Cout << result.path() << Endl;
-    Cout << result.partition_count() << Endl;
+    //auto result = DescribeVolume(channel, topicPath);
+
+    //Cout << result.path() << Endl;
+    //Cout << result.partition_count() << Endl;
 }
