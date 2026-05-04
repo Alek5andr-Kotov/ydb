@@ -3,7 +3,75 @@
 
 namespace NYdb::inline Dev::NTopic::NTests::NTxUsage {
 
+#define Y_UNIT_TEST_XX(N) \
+    template <class F> \
+    struct TTestCase##N : public F { \
+        explicit TTestCase##N(bool skipConflictCheckForTopicsInTransaction) \
+            : FullTestName(#N) \
+            , SkipConflictCheckForTopicsInTransaction(skipConflictCheckForTopicsInTransaction) \
+        { \
+            FullTestName += "-"; \
+            if constexpr (std::is_same_v<F, TFixtureTable>) { \
+                FullTestName += "Table"; \
+            } else if constexpr (std::is_same_v<F, TFixtureQuery>) { \
+                FullTestName += "Query"; \
+            } \
+            FullTestName += "-"; \
+            FullTestName += "SkipConflictCheckForTopicsInTransaction-"; \
+            FullTestName += (skipConflictCheckForTopicsInTransaction ? "true" : "false"); \
+            \
+            NUnitTest::TBaseTestCase::Name_ = FullTestName.data(); \
+            NUnitTest::TBaseTestCase::ForceFork_ = false; \
+            NUnitTest::TBaseTestCase::File_ = __FILE__; \
+            NUnitTest::TBaseTestCase::Line_ = __LINE__; \
+        } \
+        \
+        template <bool skipConflictCheckForTopicsInTransaction> \
+        static THolder<NUnitTest::TBaseTestCase> Create() { return MakeHolder<TTestCase##N>(skipConflictCheckForTopicsInTransaction); } \
+        void Execute_(NUnitTest::TTestContext&) override; \
+        \
+        void AugmentServerSettings(NKikimr::Tests::TServerSettings& settings) override { \
+            settings.SetEnableSkipConflictCheckForTopicsInTransaction(SkipConflictCheckForTopicsInTransaction); \
+        } \
+        \
+        TString FullTestName; \
+        bool SkipConflictCheckForTopicsInTransaction; \
+    }; \
+    \
+    struct TTestRegistration##N { \
+        TTestRegistration##N() { \
+            TCurrentTest::AddTest(&TTestCase##N<TFixtureTable>::Create<false>); \
+            TCurrentTest::AddTest(&TTestCase##N<TFixtureTable>::Create<true>); \
+            \
+            TCurrentTest::AddTest(&TTestCase##N<TFixtureQuery>::Create<false>); \
+            TCurrentTest::AddTest(&TTestCase##N<TFixtureQuery>::Create<true>); \
+        } \
+    }; \
+    static TTestRegistration##N testRegistration##N; \
+    \
+    template <class F> \
+    void TTestCase##N<F>::Execute_(NUnitTest::TTestContext& ut_context Y_DECLARE_UNUSED) 
+
 Y_UNIT_TEST_SUITE(TxUsage) {
+
+Y_UNIT_TEST_XX(TestWriteToTopic16)
+{
+    CreateTopic("topic_A");
+
+    auto session = CreateSession();
+    auto tx = session->BeginTx();
+
+    WriteToTopic("topic_A", TEST_MESSAGE_GROUP_ID, "message #1", tx.get());
+    WriteToTopic("topic_A", TEST_MESSAGE_GROUP_ID, "message #2", tx.get());
+
+    RestartPQTablet("topic_A", 0);
+
+    session->CommitTx(*tx, EStatus::SUCCESS);
+
+    auto messages = Read_Exactly_N_Messages_From_Topic("topic_A", TEST_CONSUMER, 2);
+    UNIT_ASSERT_VALUES_EQUAL(messages[0], "message #1");
+    UNIT_ASSERT_VALUES_EQUAL(messages[1], "message #2");
+}
 
 Y_UNIT_TEST_F(EmptySourceId_ParallelTx_Table, TFixtureTable)
 {
