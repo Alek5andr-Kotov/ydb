@@ -36,6 +36,13 @@ namespace NYdb::inline Dev::NTopic::NTests::NTxUsage {
         \
         TString FullTestName; \
         bool SkipConflictCheckForTopicsInTransaction; \
+        \
+    protected: \
+        using F::CreateTopic; \
+        using F::CreateSession; \
+        using F::WriteToTopic; \
+        using F::RestartPQTablet; \
+        using F::Read_Exactly_N_Messages_From_Topic; \
     }; \
     \
     struct TTestRegistration##N { \
